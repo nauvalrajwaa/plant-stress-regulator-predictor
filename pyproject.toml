@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stress_predictor"
+version = "0.1.0"
+description = "CLI tool for protein sequence mutation and prediction using Hugging Face models"
+authors = [
+    { name = "iGEM UGM", email = "igemugm@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+    "transformers==4.47.0",
+    "torch",
+    "biopython",
+    "matplotlib",
+    "protobuf",
+    "accelerate>=0.26.0",
+    "einops"
+]
+
+[tool.setuptools]
+py-modules = ["stress_predictor"]
+
+[project.scripts]
+stress-predictor = "stress_predictor.main:main"
