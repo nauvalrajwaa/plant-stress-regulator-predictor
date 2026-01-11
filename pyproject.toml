@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stress_predictor"
 version = "0.1.0"
-description = "CLI tool for protein sequence mutation and prediction using Hugging Face models"
+description = "CLI tool for DNA stress region prediction using fine-tuned Transformer models"
 authors = [
     { name = "iGEM UGM", email = "igemugm@gmail.com" }
 ]
@@ -14,7 +14,7 @@ requires-python = ">=3.8"
 
 dependencies = [
     "transformers==4.47.0",
-    "torch",
+    "torch>=2.0.0,<3.0.0",
     "biopython",
     "matplotlib",
     "protobuf",
