@@ -1,92 +1,159 @@
-# Stress Predictor
+# Stress Predictor & Training Pipeline
 
-A high-performance command-line interface (CLI) tool designed to predict stress-responsive regions in DNA sequences. By leveraging state-of-the-art Transformer models fine-tuned on plant genomic data, it provides researchers with specific insights into genetic stress responses.
+A comprehensive toolkit for predicting, analyzing, and training models for stress-responsive regions in plant DNA. This repository contains both the **Inference Engine** (for making predictions) and the **Training Pipeline** (for mining data from NCBI and training new custom models).
 
-## 🌟 Key Features
+## 🌟 Features
 
-- **Advanced Transformer Models**: Supports both **DNABERT-2** and **Mistral DNA Athaliana** specialized architectures.
-- **Optimized Inference Engine**: Refactored prediction logic for high efficiency—up to **100x faster** than standard implementations by minimizing model loading overhead.
-- **Dual Prediction Modes**: 
-  - **Region Mode**: Targeted analysis of small genomic sequences (1-2kb).
-  - **Promoter Mode**: Large-scale analysis of promoter regions (5-10kb) using intelligent slicing.
-- **Robust Error Handling**: Built-in CUDA Out-of-Memory (OOM) recovery with automatic CPU fallback.
-- **Visual Analytics**: Automatically generates heatmaps and sequence-level visualizations of stress probability.
-
-## 🏗️ Project Structure
-```text
-stress-predictor/
-├── pyproject.toml           # Modular Project configuration & dependencies
-├── stress_predictor/
-│   ├── main.py              # Application entry point
-│   ├── cli.py               # Argument parsing logic
-│   ├── io_utils.py          # Validated FASTA handling
-│   ├── model_utils.py       # core inference engine & performance fixes
-│   └── __init__.py          # Module exports
-└── software_test/           # Validation datasets and baseline results
-```
-
-## 🚀 Quick Start
-
-### 1. Installation
-```bash
-# Clone the repository
-git clone https://github.com/venusangela/stress-predictor.git
-cd stress-predictor
-
-# Setup environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# Install in editable mode
-pip install -e .
-```
-
-### 2. Basic Usage
-
-#### **Region Classification** (1kb - 2kb sequences)
-```bash
-stress-predictor --rg --input sequences.fasta --model dnabert --tokenizer dnabert --output results_rg
-```
-
-#### **Promoter Classification** (5kb - 10kb sequences)
-```bash
-stress-predictor --pr --input promoter.fasta --model mistral-athaliana --tokenizer mistral-athaliana --output results_pr
-```
-
-## 📊 Output Formats
-
-The tool generates two types of outputs in your specified directory:
-
-1.  **`result.json`**: A detailed report containing:
-    *   Window-by-window prediction labels.
-    *   Confidence scores for every genomic segment.
-    *   Aggregated final stress score for the entire sequence.
-2.  **Visualizations (`.png`)**: 
-    *   Heatmaps showing predicted stress regions across the sequence length.
-    *   Color-coded segments (Green for Stress, Red for Non-Stress).
-
-## 🧠 Supported Models
-
-| Model Name | Architecture | Target Plant | Source |
-| :--- | :--- | :--- | :--- |
-| `dnabert` | BERT-based | *Nicotiana tabaccum* | [HuggingFace: igemugm](https://huggingface.co/igemugm) |
-| `mistral-athaliana` | Mistral-based | *Arabidopsis thaliana* | [HuggingFace: igemugm](https://huggingface.co/igemugm) |
-
-## 🛠️ Configuration & Parameters
-
-| Flag | Description | Default |
-| :--- | :--- | :--- |
-| `--input` | Path to FASTA file (Single sequence) | **Required** |
-| `--model` | Model name (`dnabert` or `mistral-athaliana`) | **Required** |
-| `--force-cpu` | Force inference on CPU even if GPU is present | `False` |
-| `--slice` | Window size for promoter slicing | `1000` |
-| `--stride` | Stride/overlap between slices | `200` |
-
-## ❗ Troubleshooting
-
-*   **CUDA Out of Memory**: The tool will automatically attempt to clear cache or switch to CPU. If it persists, try increasing the `--stride`.
-*   **Command Not Found**: Ensure you have activated your virtual environment and ran `pip install -e .`.
-*   **Sequence Length Error**: Ensure your FASTA file contains only **one** sequence and matches the required length (1-2kb for RG, 5-10kb for PR).
+*   **Dual Mode Inference**: 
+    *   `--rg`: Small region analysis (1-2kb)
+    *   `--pr`: Promoter scanning (up to 10kb) with adaptive slicing.
+*   **End-to-End Training**: Automated pipeline to **Search** genes, **Mine** sequences, **Check** validity, and **Train** ensemble models.
+*   **Visual Analytics**: 
+    *   Probability Heatmaps (Green = Stress, Red = Non-Stress).
+    *   Sequence Logo generation for motif analysis.
+*   **Dynamic Configuration**: Flexible support for different organisms (*Arabidopsis*, *Rice*, etc.) and gene limits.
 
 ---
-*Created by iGEM UGM (igemugm@gmail.com)*
+
+## 🚀 Installation
+
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/venusangela/stress-predictor.git
+    cd stress-predictor
+    ```
+
+2.  **Install Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+---
+
+## 🔍 Part 1: Inference (Running Predictions)
+
+Use `stress_predictor/main.py` to predict stress regions on your FASTA files.
+
+### Basic Usage
+
+**1. Promoter Mode (Long Sequences ~5kb):**
+```bash
+python stress_predictor/main.py \
+    --input "software_test/random_seq_test/random_5kb.fasta" \
+    --pr \
+    --model "dnabert" \
+    --tokenizer "dnabert"
+```
+
+**2. Region Mode (Short Sequences ~1kb):**
+```bash
+python stress_predictor/main.py \
+    --input "software_test/random_seq_test/random_2kb.fasta" \
+    --rg \
+    --model "dnabert" \
+    --tokenizer "dnabert"
+```
+
+**3. Using a Custom Trained Model (Local Path):**
+```bash
+python stress_predictor/main.py \
+    --input "your_sequence.fasta" \
+    --pr \
+    --model-path "train_2/plantbert" 
+```
+
+### Understanding the Output
+Results are saved in `runs/run_YYYYMMDD_HHMMSS_{type}/`.
+
+1.  **`result.json`**: Contains raw probabilities and extracted contiguous stress regions.
+2.  **`report.html`**: Interactive HTML visualization of the sequence.
+3.  **`heatmap.png`**: (Located in `runs/` folder) Visual representation of stress probability.
+    *   **Green**: High Probability of Stress Response.
+    *   **Yellow**: Intermediate/Uncertain.
+    *   **Red**: Low Probability (Non-Stress).
+
+---
+
+## 🛠 Part 2: Training Pipeline
+
+Use `scripts/train.py` to build your own dataset and train models from scratch using NCBI data.
+
+### Workflow Steps
+The pipeline supports `search` -> `mine` -> `check` -> `train` -> `eval`.
+
+### Example Commands
+
+**1. Full Pipeline (Recommended for New Organisms):**
+*Searches NCBI, mines sequences, generates logos, and trains the model.*
+```bash
+python scripts/train.py --step all --organism "Oryza sativa" --limit-genes 500 --email your@email.com
+```
+
+**2. Mining Only (Create Dataset):**
+*Download sequences for a specific organism without training.*
+```bash
+python scripts/train.py --step mine --organism "Zea mays" --limit-genes 200 --max-seq-len 5000
+```
+*Output will be saved in `datasets/dataset_Zea_mays_200_5000_50.csv`*
+
+**3. Multiclass Training:**
+*Train a model to distinguish specific stress types (Drought vs Cold vs Salt).*
+```bash
+python scripts/train.py --step train --task-type multiclass --mined-data "datasets/dataset_MyOrganism.csv"
+```
+
+**4. Generate Sequence Logo:**
+*Visualize the motifs in your mined dataset.*
+```bash
+python scripts/train.py --step logo --mined-data "datasets/dataset_MyOrganism.csv" --logo-out "plot/"
+```
+
+### Pipeline Arguments
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `--step` | `all`, `search`, `mine`, `train`, `logo`, `check` | `all` |
+| `--organism` | Target scientific name | `Arabidopsis thaliana` |
+| `--limit-genes` | Number of genes to process | `100` |
+| `--task-type` | `binary` (Stress/No-Stress) or `multiclass` | `binary` |
+| `--mined-data` | Input CSV path (Auto-generated if skipped) | `datasets/...` |
+
+---
+
+## 📊 Part 3: Data Analysis
+
+Use `scripts/analyze_results.py` for deeper inspection of your datasets *before* or *after* training.
+
+```bash
+# Auto-detects the last run for this config
+python scripts/analyze_results.py --organism "Oryza sativa" --size 500
+
+# Explicit file analysis
+python scripts/analyze_results.py --input "datasets/dataset_custom.csv" --mode stats
+```
+
+**Analysis Modes (`--mode`):**
+*   `stats`: Show length distribution, class imbalance, and duplicates.
+*   `check`: Validate IUPAC characters in DNA sequences.
+*   `logo`: Generate sequence logo images in `analysis/` folder.
+
+---
+
+## 📂 Folder Structure
+
+```text
+stress-predictor/
+├── datasets/                 # 📂 Stores mined CSVs and gene lists (Auto-generated)
+├── plots/                    # 📂 Stores Sequence Logos (png)
+├── runs/                     # 📂 Stores Inference outputs (Heatmaps, HTML, JSON)
+├── scripts/
+│   ├── train.py              # 🧠 Main Training Pipeline
+│   ├── analyze_results.py    # 📊 Data Analysis Tool
+│   └── ensemble_predictor.py # 🤖 Model Definitions
+├── stress_predictor/
+│   ├── main.py               # 🔮 Inference Entry Point
+│   └── model_utils.py        # ⚙️ Inference Logic
+└── software_test/            # 🧪 Test FASTA files
+```
+
+---
+*Created for Stress Region Prediction Project*
