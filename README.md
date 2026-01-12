@@ -72,6 +72,8 @@ Results are saved in `runs/run_YYYYMMDD_HHMMSS_{type}/`.
     *   **Yellow**: Intermediate/Uncertain.
     *   **Red**: Low Probability (Non-Stress).
 
+![Visualization Example](figures/visualization.png)
+
 ---
 
 ## 🛠 Part 2: Training Pipeline
