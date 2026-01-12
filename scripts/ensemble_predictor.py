@@ -209,12 +209,13 @@ def train_new_model_from_mined_data(mined_data_path, output_model_path="svm_retr
     print(f"      -> Retraining Complete. Validation Accuracy: {acc*100:.2f}%")
     
 
-def prepare_augmented_data(mined_data_path):
+def prepare_augmented_data(mined_data_path, task_type="binary"):
     """
-    Helper to load mined data and generate random negatives.
-    Returns: train_df, test_df (pandas DataFrames with 'text' and 'labels' columns)
+    Helper to load mined data.
+    If task_type='binary': Generates random negatives to match positives (Label 1).
+    If task_type='multiclass': Uses existing 'Label' column from CSV.
     """
-    # 1. Load Mined Data (Positives)
+    # 1. Load Data
     if not os.path.exists(mined_data_path):
         print(f"[ERROR] File not found: {mined_data_path}")
         return None, None
@@ -223,42 +224,60 @@ def prepare_augmented_data(mined_data_path):
     if 'Extracted_Sequence' not in df_mined.columns:
         print("[ERROR] Column 'Extracted_Sequence' is missing.")
         return None, None
+
+    if task_type == "multiclass":
+        if 'Label' not in df_mined.columns:
+             print("[ERROR] Multiclass mode requires 'Label' column in input CSV.")
+             return None, None
         
-    positive_seqs = df_mined['Extracted_Sequence'].tolist()
-    positive_labels = [1] * len(positive_seqs)
-    
-    # 2. Generate Random Data (Negatives)
-    avg_len = int(sum(len(s) for s in positive_seqs) / len(positive_seqs))
-    
-    negative_seqs = []
-    bases = ['A', 'C', 'G', 'T']
-    for _ in range(len(positive_seqs)):
-        length = random.randint(int(avg_len*0.8), int(avg_len*1.2))
-        seq = "".join(random.choices(bases, k=length))
-        negative_seqs.append(seq)
-    
-    negative_labels = [0] * len(negative_seqs)
-    
-    # 3. Combine
-    all_seqs = positive_seqs + negative_seqs
-    all_labels = positive_labels + negative_labels
-    
-    df_full = pd.DataFrame({'text': all_seqs, 'labels': all_labels})
+        print(f"      -> Multiclass Mode: Found labels {df_mined['Label'].unique()}")
+        df_full = df_mined.rename(columns={'Extracted_Sequence': 'text', 'Label': 'labels'})
+        
+        # Ensure labels are integers 0..N
+        # If labels are strings, encode them
+        if df_full['labels'].dtype == 'O':
+            from sklearn.preprocessing import LabelEncoder
+            le = LabelEncoder()
+            df_full['labels'] = le.fit_transform(df_full['labels'])
+            print(f"      -> Encoded labels mapping: {dict(zip(le.classes_, le.transform(le.classes_)))}")
+
+    else:
+        # Binary Mode: Generate Negatives
+        positive_seqs = df_mined['Extracted_Sequence'].tolist()
+        positive_labels = [1] * len(positive_seqs)
+        
+        # Generate Random Data (Negatives)
+        avg_len = int(sum(len(s) for s in positive_seqs) / len(positive_seqs))
+        
+        negative_seqs = []
+        bases = ['A', 'C', 'G', 'T']
+        for _ in range(len(positive_seqs)):
+            length = random.randint(int(avg_len*0.8), int(avg_len*1.2))
+            seq = "".join(random.choices(bases, k=length))
+            negative_seqs.append(seq)
+        
+        negative_labels = [0] * len(negative_seqs)
+        
+        # Combine
+        all_seqs = positive_seqs + negative_seqs
+        all_labels = positive_labels + negative_labels
+        
+        df_full = pd.DataFrame({'text': all_seqs, 'labels': all_labels})
     
     # 4. Split
-    train_df, test_df = train_test_split(df_full, test_size=0.2, random_state=42)
+    train_df, test_df = train_test_split(df_full, test_size=0.2, random_state=42, stratify=df_full['labels'])
     return train_df, test_df
 
-def train_multimodel_ml(mined_data_path, output_model_path="best_ml_model.pkl"):
+def train_multimodel_ml(mined_data_path, output_model_path="best_ml_model.pkl", task_type="binary"):
     """
     Trains Multiple ML Models (SVM, RF, GB, LR) on the mined data + random negatives.
     Performs Grid Search to find the best hyperparameters.
     Returns the BEST model and vectorizer.
     """
-    print(f"\n--- STARTING MULTI-MODEL ML TRAINING ---")
+    print(f"\n--- STARTING MULTI-MODEL ML TRAINING ({task_type.upper()}) ---")
     
     # 1. Prepare Data
-    train_df, test_df = prepare_augmented_data(mined_data_path)
+    train_df, test_df = prepare_augmented_data(mined_data_path, task_type)
     if train_df is None: return None, None
     print(f"      -> Data split: {len(train_df)} Train, {len(test_df)} Test")
 
@@ -332,18 +351,22 @@ def train_multimodel_ml(mined_data_path, output_model_path="best_ml_model.pkl"):
     
     return best_overall_model, vectorizer
 
-def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_finetuned_mined"):
+def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_finetuned_mined", task_type="binary"):
     """
     Trains PlantBERT using the mined data + random negatives.
     Replicates the logic from finetune_plantbert_expanded.py but callable.
     """
-    print(f"\n--- STARTING PLANTBERT RETRAINING ---")
+    print(f"\n--- STARTING PLANTBERT RETRAINING ({task_type.upper()}) ---")
     
     # 1. Prepare Data
-    train_df, test_df = prepare_augmented_data(mined_data_path)
+    train_df, test_df = prepare_augmented_data(mined_data_path, task_type)
     if train_df is None: return
     
     print(f"      -> Data split: {len(train_df)} Train, {len(test_df)} Test")
+    
+    # Determine number of labels
+    num_labels = len(train_df['labels'].unique())
+    print(f"      -> Detected {num_labels} classes.")
     
     # Convert to HF Dataset
     dataset = ds.DatasetDict({
@@ -383,10 +406,10 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_
     
     print(f"      -> Loading Model Weights from: {model_path}")
     try:
-        model = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=2)
+        model = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels, ignore_mismatched_sizes=True)
     except Exception as e:
         print(f"      -> [Warning] Failed to load {model_path} ({e}). Reverting to Base.")
-        model = AutoModelForSequenceClassification.from_pretrained(BASE_BERT_PATH, num_labels=2)
+        model = AutoModelForSequenceClassification.from_pretrained(BASE_BERT_PATH, num_labels=num_labels, ignore_mismatched_sizes=True)
 
     model.resize_token_embeddings(len(tokenizer))
 

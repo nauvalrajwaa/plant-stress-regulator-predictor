@@ -1,7 +1,11 @@
 plot/
 __pycache__/
-./DS_Store
-.ipynb_checkpoints
 env/
-*.pyc
 PlantBERT/
+runs/
+datasets/
+models/
+./DS_Store
+*.pyc
+.ipynb_checkpoints
+

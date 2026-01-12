@@ -1,0 +1,13 @@
+transformers==4.47.0
+torch>=2.0.0,<3.0.0
+biopython
+matplotlib
+protobuf
+accelerate>=0.26.0
+einops
+pandas
+numpy
+scikit-learn
+logomaker
+datasets
+evaluate
