@@ -13,6 +13,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import time
+import sys
 
 try:
     import einops
@@ -20,12 +21,28 @@ except ImportError:
     print("\n[CRITICAL WARNING] 'einops' library is not found. DNABERT-2 requires it!")
     print("If you are using DNABERT-2, please run: pip install einops\n")
 
-from transformers import (
-    AutoModelForSequenceClassification, 
-    AutoTokenizer, 
-    TrainingArguments, 
-    Trainer
-)
+try:
+    from transformers import (
+        AutoModelForSequenceClassification, 
+        AutoTokenizer, 
+        TrainingArguments, 
+        Trainer,
+        AutoConfig
+    )
+except RuntimeError as e:
+    # Catching common Colab/PEFT version mismatch error
+    if "modeling_layers" in str(e) or "peft" in str(e):
+        print("\n" + "!"*60)
+        print(" CRITICAL LIBRARY MISMATCH DETECTED")
+        print("!"*60)
+        print(" The installed version of 'peft' is incompatible with 'transformers'.")
+        print(" This is a common issue in Google Colab environments.")
+        print(" Please run the following command in a new cell to fix it:")
+        print("\n    !pip install --upgrade peft accelerate transformers\n")
+        print(" Then RESTART THE RUNTIME (Runtime > Restart Session) and run again.")
+        print("!"*60 + "\n")
+        sys.exit(1)
+    raise e
 
 # =============================================================================
 # GLOBAL PATH CONFIGURATION
