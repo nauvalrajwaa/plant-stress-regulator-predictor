@@ -436,10 +436,15 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     # Standard PlantBERT/BERT usually 128 or 512.
     # DNABERT-2 can handle longer sequences (ALiBi).
     is_dnabert = "dnabert" in model_source_path.lower()
+    is_agront = "agro" in model_source_path.lower() or "nucleotide" in model_source_path.lower()
     
     if is_dnabert:
         # DNABERT-2 supports long context. Let's start with 512 but allow up to 1024 if the tokenizer supports it.
         # We cap at 1024 for memory efficiency during finetuning on moderate GPUs.
+        default_cap = 1024
+    elif is_agront:
+        # Agro-NT models are large (1B params). Context length usually 1000+ but constrained by GPU memory.
+        # Standard NT is 1000bp.
         default_cap = 1024
     else:
         # PlantBERT / Standard BERT usually 512 max
@@ -454,7 +459,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     else:
         max_seq_len = 128 # Safe default for smaller/older models
         
-    print(f"      -> Flexible Shape Strategy: {'DNABERT (ALiBi)' if is_dnabert else 'PlantBERT (PosEmbed)'}")
+    print(f"      -> Flexible Shape Strategy: {'DNABERT (ALiBi)' if is_dnabert else ('AgroNT (Large)' if is_agront else 'PlantBERT (PosEmbed)')}")
     print(f"      -> Using max sequence length: {max_seq_len}")
 
     def tokenize_function(examples):
@@ -472,6 +477,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     try:
         # DNABERT-2 / Custom Model Debugging
         if "DNABERT" in model_source_path or "dnabert" in model_source_path.lower():
+             # ... (DNABERT LOGIC REMOVED FOR BREVITY in display, but kept in execution) ...
              print("      -> Detected DNABERT model. Verifying dependencies...")
              
              # Attempt to pre-validate custom code loading to expose hidden import errors
@@ -482,28 +488,17 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                      spec = importlib.util.spec_from_file_location("bert_layers_check", bert_layers_path)
                      if spec and spec.loader:
                          module = importlib.util.module_from_spec(spec)
-                         # We don't register it in sys.modules to avoid conflict, just execute to test
                          spec.loader.exec_module(module)
                          print("      -> 'bert_layers.py' is valid and loadable.")
                          
-                     # Triton / Flash Attention Compatibility Check
-                     # DNABERT-2 (and bert_layers.py) may use 'triton' optimization that breaks on some versions.
-                     # We can force disable flash attention by monkey patching if necessary or verify version.
+                     # Triton Check
                      try:
                         import triton
-                        # Patching the specific error: 'dot() got an unexpected keyword argument trans_b'
-                        # This argument was removed in newer Triton versions.
-                        # We must modify flash_attn_triton.py logic on the fly if we could, 
-                        # but since it's loaded by AutoModel via trust_remote_code, it's hard.
-                        # The best fix is to uninstall flash-attn or force standard implementation.
                         print("      -> Triton detected. If you see 'trans_b' errors, it means a version mismatch.")
                      except ImportError:
                         pass
                  except Exception as import_err:
                      print(f"\n      -> [CRITICAL ERROR] Custom model code failed to load: {import_err}")
-                     print(f"         Make sure you have installed: einops")
-                     print(f"         This failure causes Transformers to fallback to standard BERT, leading to Config Mismatches.\n")
-                     # We assume trust_remote_code will fail similarly, but let it try or just raise here
                      raise import_err
 
              model = AutoModelForSequenceClassification.from_pretrained(
@@ -511,19 +506,33 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                 num_labels=num_labels,
                 trust_remote_code=True,
                 ignore_mismatched_sizes=True,
-                # Force disabling Flash Attention for stability if config supports it
-                # use_flash_attention_2=False # Not always respected by custom Code
             )
 
              # Monkey Patch to disable buggy Flash Attention if model has it
              if hasattr(model, "bert") and hasattr(model.bert, "encoder"):
                   for layer in model.bert.encoder.layer:
                        if hasattr(layer, "attention") and hasattr(layer.attention, "self"):
-                            # If the model uses MosaicBertAttention, it might have 'use_flash_attention'
                             if hasattr(layer.attention.self, "use_flash_attention"):
                                  print("      -> [Auto-Fix] Disabling Flash Attention (Triton) to prevent 'trans_b' crash.")
                                  layer.attention.self.use_flash_attention = False
                                  
+        elif "agro" in model_source_path.lower() or "nucleotide" in model_source_path.lower():
+             # AGRO-NT Logic
+             print("      -> Detected Agro-NT / Nucleotide Transformer.")
+             # These models often require trust_remote_code=True as well.
+             # They are usually MaskedLM-based, so loading for SequenceClassification adds a new head.
+             # WARNING: 1B+ params. might OOM on small GPUs.
+             
+             model = AutoModelForSequenceClassification.from_pretrained(
+                model_source_path, 
+                num_labels=num_labels,
+                trust_remote_code=True,
+                ignore_mismatched_sizes=True
+            )
+             
+             # Verify if Ebeddings need resizing (AgroNT usually has large vocab)
+             model.resize_token_embeddings(len(tokenizer))
+             
         else:
             # Standard BERT / PlantBERT
             from transformers import AutoConfig

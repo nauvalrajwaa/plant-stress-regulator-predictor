@@ -358,22 +358,29 @@ Examples:
     # Model & LLM Flags
     # --model-path takes precedence if provided. --llm-model sets --model-path to presets.
     parser.add_argument("--model-path", type=str, default=None, help="Path to base model (PlantBERT or DNABERT, local or HF ID)")
-    parser.add_argument("--llm-model", type=str, default="plantbert", choices=["plantbert", "dnabert2", "custom"], 
-                        help="Select LLM preset: 'plantbert' (nigelhartm/PlantBERT) or 'dnabert2' (zhihan1996/DNABERT-2-117M)")
+    parser.add_argument("--llm-model", type=str, default="plantbert", choices=["plantbert", "dnabert2", "agront", "custom"], 
+                        help="Select LLM preset: 'plantbert', 'dnabert2', or 'agront' (InstaDeepAI/agro-nucleotide-transformer-1b)")
 
     args = parser.parse_args()
 
     # Dynamic Path Generation
     # Define project root
     project_root = os.path.abspath(os.path.join(current_dir, ".."))
-
+    
     # Sanitize organism name for filename (remove spaces)
     org_clean = args.organism.replace(" ", "_").replace("(", "").replace(")", "")
     
     # Create Unique RUN ID based on timestamp and config
     # Format: run_{YYYYMMDD_HHMMSS}_{Organism}_{ModelType}
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    model_type_tag = "dnabert" if (args.llm_model == "dnabert2" or (args.model_path and "dnabert" in args.model_path.lower())) else "plantbert"
+    
+    if args.llm_model == "dnabert2" or (args.model_path and "dnabert" in args.model_path.lower()):
+        model_type_tag = "dnabert"
+    elif args.llm_model == "agront" or (args.model_path and "agro" in args.model_path.lower()):
+        model_type_tag = "agront"
+    else:
+        model_type_tag = "plantbert"
+        
     run_id = f"run_{timestamp}_{org_clean}_{model_type_tag}"
     
     # Define Output Directory for THIS specific run
@@ -399,7 +406,8 @@ Examples:
     if args.model_path is None:
         if args.llm_model.lower() == "dnabert2":
              args.model_path = "zhihan1996/DNABERT-2-117M"
-        elif args.llm_model.lower() == "plantbert":
+        elif args.llm_model.lower() == "agront":
+             args.model_path = "InstaDeepAI/agro-nucleotide-transformer-1b"
              # Default fallback is local PlantBERT if present, else HF ID
              # Checking if local PlantBERT exists to maintain backward compatibility
              local_plantbert = os.path.join(project_root, "PlantBERT")
