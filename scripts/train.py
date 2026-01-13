@@ -366,10 +366,33 @@ Examples:
     # Dynamic Path Generation
     # Define project root
     project_root = os.path.abspath(os.path.join(current_dir, ".."))
+
+    # Sanitize organism name for filename (remove spaces)
+    org_clean = args.organism.replace(" ", "_").replace("(", "").replace(")", "")
     
-    # Define Models Directory
-    models_dir = os.path.join(project_root, "models")
-    os.makedirs(models_dir, exist_ok=True)
+    # Create Unique RUN ID based on timestamp and config
+    # Format: run_{YYYYMMDD_HHMMSS}_{Organism}_{ModelType}
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    model_type_tag = "dnabert" if (args.llm_model == "dnabert2" or (args.model_path and "dnabert" in args.model_path.lower())) else "plantbert"
+    run_id = f"run_{timestamp}_{org_clean}_{model_type_tag}"
+    
+    # Define Output Directory for THIS specific run
+    runs_dir = os.path.join(project_root, "runs")
+    current_run_dir = os.path.join(runs_dir, run_id)
+    os.makedirs(current_run_dir, exist_ok=True)
+    
+    # Define Models Directory (Global or Run Specific?)
+    # User requested separate runs folder logic.
+    # We will save models INSIDE this run folder to keep everything together.
+    models_dir = os.path.join(current_run_dir, "models")
+    os.makedirs(models_dir, exist_ok=True)       
+    
+    # Define Datasets Directory (Global or Run Specific?)
+    # Keeping raw datasets global is usually better to avoid duplication, 
+    # BUT finding them inside the run folder is clearer for reproducibility.
+    # Let's place the specific dataset for this run inside the run folder.
+    datasets_dir = os.path.join(current_run_dir, "data")
+    os.makedirs(datasets_dir, exist_ok=True)
 
     # Resolve Model Path based on LLM Selection
     # If explicit --model-path is given, it overrides the preset.
@@ -404,23 +427,22 @@ Examples:
              print("[WARN] Could not auto-detect PLACE_Parsed_Complete_V2.csv. Please provide --place-csv.")
 
     # Create datasets folder if not exists
-    datasets_dir = os.path.join(current_dir, "..", "datasets")
-    os.makedirs(datasets_dir, exist_ok=True)
+    # datasets_dir handled above in RUN ID logic
 
-    # Sanitize organism name for filename (remove spaces)
-    org_clean = args.organism.replace(" ", "_")
-    run_id = f"{org_clean}_{args.limit_genes}_{args.max_seq_len}_{args.flank_bp}"
+    # run_id variable already created above
+    # simple_id for file naming
+    file_id = f"{org_clean}_{args.limit_genes}_{args.max_seq_len}"
     
     # Set default paths if not provided
     if args.gene_list is None:
-        args.gene_list = os.path.join(datasets_dir, f"list_gen_{run_id}.txt")
+        args.gene_list = os.path.join(datasets_dir, f"list_gen_{file_id}.txt")
     
     if args.mined_data is None:
-        args.mined_data = os.path.join(datasets_dir, f"dataset_{run_id}.csv")
+        args.mined_data = os.path.join(datasets_dir, f"dataset_{file_id}.csv")
         
     print(f"--- RUN CONFIGURATION ---")
     print(f"Run ID: {run_id}")
-    print(f"Output Directory: {datasets_dir}")
+    print(f"Run Directory: {current_run_dir}")
     print(f"Gene List: {args.gene_list}")
     print(f"Mined Sequence Data: {args.mined_data}")
     print(f"Models Directory: {models_dir if args.save_models else 'Not saving'}")
@@ -447,7 +469,7 @@ Examples:
             args.mined_data, 
             args.task_type,
             organism=args.organism,
-            models_dir=models_dir,
+            models_dir=models_dir, # Now pointing to runs/run_ID/models
             save_models=args.save_models,
             base_model_path=args.model_path
         )
@@ -458,8 +480,14 @@ Examples:
         # Immediate Evaluation if 'train' is independent step or part of 'all'
         if (args.step == "train" or args.step == "all") and ml_model is not None:
             print("\n--- STEP 4: EVALUATION ---")
-            evaluate_models_on_holdout(args.mined_data, ml_model, vect, bert_model, bert_tok)
-            predict_with_new_models(args.mined_data, ml_model, vect, bert_model, bert_tok)
+            
+            # Predict and Save Results to RUN Directory
+            results_df = predict_with_new_models(args.mined_data, ml_model, vect, bert_model, bert_tok)
+            
+            if results_df is not None:
+                 res_path = os.path.join(current_run_dir, "predictions.csv")
+                 results_df.to_csv(res_path, index=False)
+                 print(f"      -> Final Predictions saved to: {res_path}")
 
     if args.step == "eval":
         # Note: Eval usually requires models in memory. 

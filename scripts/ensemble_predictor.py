@@ -434,12 +434,27 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     
     # Check model max position embeddings to avoid shape errors
     # Standard PlantBERT/BERT usually 128 or 512.
-    if hasattr(tokenizer, 'model_max_length'):
-        max_seq_len = min(512, tokenizer.model_max_length)
-        if max_seq_len > 10000: max_seq_len = 512 # Handle 'very large' default values
+    # DNABERT-2 can handle longer sequences (ALiBi).
+    is_dnabert = "dnabert" in model_source_path.lower()
+    
+    if is_dnabert:
+        # DNABERT-2 supports long context. Let's start with 512 but allow up to 1024 if the tokenizer supports it.
+        # We cap at 1024 for memory efficiency during finetuning on moderate GPUs.
+        default_cap = 1024
     else:
-        max_seq_len = 128 # Safe default for smaller PlantBERT models
+        # PlantBERT / Standard BERT usually 512 max
+        default_cap = 512
+
+    if hasattr(tokenizer, 'model_max_length'):
+        safe_max = tokenizer.model_max_length
+        if safe_max > 100000: # Handle 'very large' arbitrary values like int.max
+            max_seq_len = default_cap
+        else:
+            max_seq_len = min(default_cap, safe_max)
+    else:
+        max_seq_len = 128 # Safe default for smaller/older models
         
+    print(f"      -> Flexible Shape Strategy: {'DNABERT (ALiBi)' if is_dnabert else 'PlantBERT (PosEmbed)'}")
     print(f"      -> Using max sequence length: {max_seq_len}")
 
     def tokenize_function(examples):
@@ -470,6 +485,20 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                          # We don't register it in sys.modules to avoid conflict, just execute to test
                          spec.loader.exec_module(module)
                          print("      -> 'bert_layers.py' is valid and loadable.")
+                         
+                     # Triton / Flash Attention Compatibility Check
+                     # DNABERT-2 (and bert_layers.py) may use 'triton' optimization that breaks on some versions.
+                     # We can force disable flash attention by monkey patching if necessary or verify version.
+                     try:
+                        import triton
+                        # Patching the specific error: 'dot() got an unexpected keyword argument trans_b'
+                        # This argument was removed in newer Triton versions.
+                        # We must modify flash_attn_triton.py logic on the fly if we could, 
+                        # but since it's loaded by AutoModel via trust_remote_code, it's hard.
+                        # The best fix is to uninstall flash-attn or force standard implementation.
+                        print("      -> Triton detected. If you see 'trans_b' errors, it means a version mismatch.")
+                     except ImportError:
+                        pass
                  except Exception as import_err:
                      print(f"\n      -> [CRITICAL ERROR] Custom model code failed to load: {import_err}")
                      print(f"         Make sure you have installed: einops")
@@ -481,15 +510,24 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                 model_source_path, 
                 num_labels=num_labels,
                 trust_remote_code=True,
-                ignore_mismatched_sizes=True
+                ignore_mismatched_sizes=True,
+                # Force disabling Flash Attention for stability if config supports it
+                # use_flash_attention_2=False # Not always respected by custom Code
             )
+
+             # Monkey Patch to disable buggy Flash Attention if model has it
+             if hasattr(model, "bert") and hasattr(model.bert, "encoder"):
+                  for layer in model.bert.encoder.layer:
+                       if hasattr(layer, "attention") and hasattr(layer.attention, "self"):
+                            # If the model uses MosaicBertAttention, it might have 'use_flash_attention'
+                            if hasattr(layer.attention.self, "use_flash_attention"):
+                                 print("      -> [Auto-Fix] Disabling Flash Attention (Triton) to prevent 'trans_b' crash.")
+                                 layer.attention.self.use_flash_attention = False
+                                 
         else:
             # Standard BERT / PlantBERT
             from transformers import AutoConfig
             config = AutoConfig.from_pretrained(model_source_path, trust_remote_code=True, num_labels=num_labels)
-            
-            # Fix for Shape Error: Ensure max_position_embeddings matches our usage if possible,
-            # but usually we just need to ensure we don't tokenize beyond what the model supports.
             
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_source_path, 
@@ -502,19 +540,44 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
             # Some older PlantBERT models have max_position_embeddings=128 but we tokenized to 512.
             # We must resize the positional embeddings if they are too small.
             if hasattr(model, "bert") and hasattr(model.bert.embeddings, "position_embeddings"):
-                current_max_pos = model.bert.embeddings.position_embeddings.weight.shape[0]
+                current_max_pos = model.config.max_position_embeddings
                 if current_max_pos < max_seq_len:
                     print(f"      -> [Auto-Fix] Resizing model position embeddings from {current_max_pos} to {max_seq_len}")
-                    # This helper function handles the resizing of the embedding layer
-                    # by copying existing weights and extending them
-                    new_pos_embed = torch.nn.Embedding(max_seq_len, model.config.hidden_size)
-                    new_pos_embed.weight.data[:current_max_pos, :] = model.bert.embeddings.position_embeddings.weight.data
-                    model.bert.embeddings.position_embeddings = new_pos_embed
+                    
+                    # 1. Update Config first
                     model.config.max_position_embeddings = max_seq_len
-                    # Update token type ids buffer if it exists (common source of errors)
+                    
+                    # 2. Get old embeddings
+                    old_pos_embeddings = model.bert.embeddings.position_embeddings
+                    old_weights = old_pos_embeddings.weight.data
+                    
+                    # 3. Create new embedding layer
+                    new_pos_embeddings = torch.nn.Embedding(max_seq_len, model.config.hidden_size)
+                    
+                    # 4. Copy weights (repeat/cycle them if needed, or just partial copy)
+                    # Safe copy: copy what we can, leave rest as random init or copy last
+                    # Standard approach: Copy existing, then initialize new ones randomly or by copying
+                    n = min(old_weights.shape[0], max_seq_len) # Ensure fit
+                    new_pos_embeddings.weight.data[:n, :] = old_weights[:n, :]
+                    
+                    # 5. Assign back to model
+                    model.bert.embeddings.position_embeddings = new_pos_embeddings
+                    
+                    # 6. IMPORTANT: Update token type ids buffer if it exists (common source of errors)
                     if hasattr(model.bert.embeddings, "token_type_ids"):
+                         # Re-register buffer with correct size
                          model.bert.embeddings.register_buffer("token_type_ids", 
                              torch.zeros((1, max_seq_len), dtype=torch.long), persistent=False)
+                    
+                    # 7. Update positional ids buffer (often overlooked)
+                    if hasattr(model.bert.embeddings, "position_ids"):
+                         model.bert.embeddings.register_buffer("position_ids",
+                             torch.arange(max_seq_len).expand((1, -1)), persistent=False)
+            
+            # Additional check for general mismatch (sometimes helps with other architectures)
+            if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+                 if model.config.max_position_embeddings < max_seq_len:
+                      print(f"      -> [Warning] Model config {model.config.max_position_embeddings} < {max_seq_len}. Resizing might have been needed but skipped if not standard BERT.")
 
     except Exception as e:
         print(f"      -> [ERROR] Failed to load {model_source_path}: {e}")
@@ -535,9 +598,18 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     # Disable W&B logging explicitly
     os.environ["WANDB_DISABLED"] = "true"
 
-    # Temp dir for checkpoints, final save is controlled below
-    ckpt_dir = os.path.join(PROJECT_ROOT, "models", "plantbert_checkpoints")
+    # Directory logic
+    # If output_dir is provided (e.g., runs/ID/models), place checkpoints in runs/ID/checkpoints
+    # Otherwise fallback to global models/plantbert_checkpoints
+    if output_dir and "runs" in output_dir:
+        # Assuming structure runs/ID/models -> go up to runs/ID -> add checkpoints
+        run_root = os.path.dirname(output_dir)
+        ckpt_dir = os.path.join(run_root, "checkpoints")
+    else:
+        ckpt_dir = os.path.join(PROJECT_ROOT, "models", "plantbert_checkpoints")
     
+    print(f"      -> Checkpoints will be saved to: {ckpt_dir}")
+
     training_args = TrainingArguments(
         output_dir=ckpt_dir,
         overwrite_output_dir=True,
