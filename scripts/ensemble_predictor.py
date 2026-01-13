@@ -431,10 +431,20 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
 
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    
+    # Check model max position embeddings to avoid shape errors
+    # Standard PlantBERT/BERT usually 128 or 512.
+    if hasattr(tokenizer, 'model_max_length'):
+        max_seq_len = min(512, tokenizer.model_max_length)
+        if max_seq_len > 10000: max_seq_len = 512 # Handle 'very large' default values
+    else:
+        max_seq_len = 128 # Safe default for smaller PlantBERT models
         
+    print(f"      -> Using max sequence length: {max_seq_len}")
+
     def tokenize_function(examples):
         # Increased max_length to 512 for better context if model supports it
-        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=max_seq_len)
         
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
     # Handle potential column differences
@@ -477,12 +487,35 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
             # Standard BERT / PlantBERT
             from transformers import AutoConfig
             config = AutoConfig.from_pretrained(model_source_path, trust_remote_code=True, num_labels=num_labels)
+            
+            # Fix for Shape Error: Ensure max_position_embeddings matches our usage if possible,
+            # but usually we just need to ensure we don't tokenize beyond what the model supports.
+            
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_source_path, 
                 config=config,
                 ignore_mismatched_sizes=True,
                 trust_remote_code=True
             )
+            
+            # Critical Fix for "Size of tensor a (512) must match size of tensor b (128)"
+            # Some older PlantBERT models have max_position_embeddings=128 but we tokenized to 512.
+            # We must resize the positional embeddings if they are too small.
+            if hasattr(model, "bert") and hasattr(model.bert.embeddings, "position_embeddings"):
+                current_max_pos = model.bert.embeddings.position_embeddings.weight.shape[0]
+                if current_max_pos < max_seq_len:
+                    print(f"      -> [Auto-Fix] Resizing model position embeddings from {current_max_pos} to {max_seq_len}")
+                    # This helper function handles the resizing of the embedding layer
+                    # by copying existing weights and extending them
+                    new_pos_embed = torch.nn.Embedding(max_seq_len, model.config.hidden_size)
+                    new_pos_embed.weight.data[:current_max_pos, :] = model.bert.embeddings.position_embeddings.weight.data
+                    model.bert.embeddings.position_embeddings = new_pos_embed
+                    model.config.max_position_embeddings = max_seq_len
+                    # Update token type ids buffer if it exists (common source of errors)
+                    if hasattr(model.bert.embeddings, "token_type_ids"):
+                         model.bert.embeddings.register_buffer("token_type_ids", 
+                             torch.zeros((1, max_seq_len), dtype=torch.long), persistent=False)
+
     except Exception as e:
         print(f"      -> [ERROR] Failed to load {model_source_path}: {e}")
         return None, None
@@ -499,6 +532,9 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
 
 
     # 4. Trainer
+    # Disable W&B logging explicitly
+    os.environ["WANDB_DISABLED"] = "true"
+
     # Temp dir for checkpoints, final save is controlled below
     ckpt_dir = os.path.join(PROJECT_ROOT, "models", "plantbert_checkpoints")
     
@@ -514,7 +550,8 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
         weight_decay=0.01,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
-        logging_steps=10
+        logging_steps=10,
+        report_to="none" # Disable WandB/MLFlow
     )
     
     trainer = Trainer(
