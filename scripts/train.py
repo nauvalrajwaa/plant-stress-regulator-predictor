@@ -408,6 +408,7 @@ Examples:
              args.model_path = "zhihan1996/DNABERT-2-117M"
         elif args.llm_model.lower() == "agront":
              args.model_path = "InstaDeepAI/agro-nucleotide-transformer-1b"
+        else:
              # Default fallback is local PlantBERT if present, else HF ID
              # Checking if local PlantBERT exists to maintain backward compatibility
              local_plantbert = os.path.join(project_root, "PlantBERT")
@@ -416,9 +417,6 @@ Examples:
                  print(f"[INFO] Using local PlantBERT found at: {local_plantbert}")
              else:
                  args.model_path = "nigelhartm/PlantBERT"
-        else:
-             # Default generic fallback
-             args.model_path = os.path.join(project_root, "PlantBERT")
     
     # Resolve PLACE CSV
     if args.place_csv is None:

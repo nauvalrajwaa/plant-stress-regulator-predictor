@@ -34,90 +34,97 @@ A comprehensive toolkit for predicting, analyzing, and training models for stres
 
 Use `stress_predictor/main.py` to predict stress regions on your FASTA files.
 
-### Basic Usage
+### 📋 Full Command Reference
 
-**1. Promoter Mode (Long Sequences ~5kb):**
+| Flag | Required | Description | Default |
+| :--- | :---: | :--- | :--- |
+| `--input` | ✅ | Path to the input FASTA file containing sequences. | - |
+| `--pr` | *One of* | **Promoter Mode**: Scans long sequences (e.g., 2kb-10kb) using a sliding window. | - |
+| `--rg` | *One of* | **Region Mode**: Classifies short DNA chunks (e.g., 200bp) directly. | - |
+| `--model-path` | ❌ | Path to a local model folder (e.g., `runs/run_ID/models/...`). **Overrides --model**. | `None` |
+| `--model` | ❌ | Hugging Face Hub model ID (if not using local path). | `None` |
+| `--tokenizer` | ❌ | Hugging Face Hub tokenizer ID (usually same as model). | `None` |
+| `--output` | ❌ | Custom folder to save results. | `runs/run_{date}_{mode}` |
+| `--slice` | ❌ | Window size (base pairs) for promoter scanning (`--pr` only). | `1000` |
+| `--stride` | ❌ | Step size for sliding window (`--pr` only). | `200` |
+| `--force-cpu` | ❌ | Force CPU execution even if GPU (CUDA/MPS) is available. | `False` |
+
+### Examples
+
+**1. Promoter Mode (Scanning Long Sequences):**
 ```bash
 python stress_predictor/main.py \
-    --input "software_test/random_seq_test/random_5kb.fasta" \
+    --input "data/promoter_sequences.fasta" \
     --pr \
-    --model "dnabert" \
-    --tokenizer "dnabert"
+    --model-path "runs/run_20260113_Rice_agront/models/PlantBERT_98.5_Oryza_sativa"
 ```
 
-**2. Region Mode (Short Sequences ~1kb):**
+**2. Region Mode (Quick Classification):**
 ```bash
 python stress_predictor/main.py \
-    --input "software_test/random_seq_test/random_2kb.fasta" \
+    --input "data/short_regions.fasta" \
     --rg \
-    --model "dnabert" \
-    --tokenizer "dnabert"
+    --model "nigelhartm/PlantBERT" \
+    --tokenizer "nigelhartm/PlantBERT"
 ```
-
-**3. Using a Custom Trained Model (Local Path):**
-```bash
-python stress_predictor/main.py \
-    --input "your_sequence.fasta" \
-    --pr \
-    --model-path "train_2/plantbert" 
-```
-
-### Understanding the Output
-Results are saved in `runs/run_YYYYMMDD_HHMMSS_{type}/`.
-
-1.  **`result.json`**: Contains raw probabilities and extracted contiguous stress regions.
-2.  **`report.html`**: Interactive HTML visualization of the sequence.
-3.  **`heatmap.png`**: (Located in `runs/` folder) Visual representation of stress probability.
-    *   **Green**: High Probability of Stress Response.
-    *   **Yellow**: Intermediate/Uncertain.
-    *   **Red**: Low Probability (Non-Stress).
-
-![Visualization Example](figures/visualization.png)
 
 ---
 
 ## 🛠 Part 2: Training Pipeline
 
-Use `scripts/train.py` to build your own dataset and train models from scratch using NCBI data.
+Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBERT, DNABERT-2, Agro-NT).
 
-### Workflow Steps
-The pipeline supports `search` -> `mine` -> `check` -> `train` -> `eval`.
+### 📋 Full Command Reference
+
+| Flag | Description | Default |
+| :--- | :--- | :--- |
+| **Pipeline Control** | | |
+| `--step` | Steps to execute: `all` (Full), `search` (NCBI), `mine` (Sequences), `train` (Fine-tune), `eval`. | `all` |
+| `--email` | **[Required]** Email address (for NCBI Entrez usage). | `user@example.com` |
+| **Model Configuration** | | |
+| `--llm-model` | **[New]** Choose Foundation Model: `plantbert`, `dnabert2`, or `agront` (1B params). | `plantbert` |
+| `--save-models` | Save valid model checkpoints to `runs/`. Use `--no-save-models` to disable. | `True` |
+| `--model-path` | Path to a specific base model (local or HF) if not using presets. | `None` |
+| **Data Mining** | | |
+| `--organism` | Target scientific name (e.g., "Oryza sativa", "Zea mays"). | "Arabidopsis thaliana" |
+| `--limit-genes` | Max number of genes to fetch from NCBI. Set `0` for no limit. | `100` |
+| `--task-type` | `binary` (Stress vs Random) or `multiclass` (Stress Type). | `binary` |
+| `--max-seq-len` | Maximum length of sequences to download to avoid memory issues. | `20000` |
+| `--flank-bp` | Number of base pairs to extract around a detected motif. | `50` |
+| **File Paths (Optional)** | | |
+| `--gene-list` | Path to a custom .txt file of gene names/accessions. | Auto-generated |
+| `--mined-data` | Path to a custom .csv file for training. | Auto-generated |
+| `--place-csv` | Path to PLACE database CSV. | Auto-detected |
 
 ### Example Commands
 
-**1. Full Pipeline (Recommended for New Organisms):**
-*Searches NCBI, mines sequences, generates logos, and trains the model.*
+**1. Train with Agro-NT (1 Billion Parameters):**
+*Automatically handles memory optimization (batch size=1, grad_accum=16).*
 ```bash
-python scripts/train.py --step all --organism "Oryza sativa" --limit-genes 500 --email your@email.com
+python scripts/train.py \
+    --step all \
+    --organism "Nicotiana tabacum" \
+    --llm-model agront \
+    --limit-genes 200
 ```
 
-**2. Mining Only (Create Dataset):**
-*Download sequences for a specific organism without training.*
+**2. Train with DNABERT-2 (Long Context):**
+*Uses 1024bp context window and custom ALiBi attention.*
 ```bash
-python scripts/train.py --step mine --organism "Zea mays" --limit-genes 200 --max-seq-len 5000
-```
-*Output will be saved in `datasets/dataset_Zea_mays_200_5000_50.csv`*
-
-**3. Multiclass Training:**
-*Train a model to distinguish specific stress types (Drought vs Cold vs Salt).*
-```bash
-python scripts/train.py --step train --task-type multiclass --mined-data "datasets/dataset_MyOrganism.csv"
+python scripts/train.py \
+    --step all \
+    --organism "Zea mays" \
+    --llm-model dnabert2 \
+    --limit-genes 500
 ```
 
-**4. Generate Sequence Logo:**
-*Visualize the motifs in your mined dataset.*
+**3. Dataset Creation Only (No Training):**
 ```bash
-python scripts/train.py --step logo --mined-data "datasets/dataset_MyOrganism.csv" --logo-out "plot/"
+python scripts/train.py \
+    --step mine \
+    --organism "Triticum aestivum" \
+    --limit-genes 1000
 ```
-
-### Pipeline Arguments
-| Argument | Description | Default |
-| :--- | :--- | :--- |
-| `--step` | `all`, `search`, `mine`, `train`, `logo`, `check` | `all` |
-| `--organism` | Target scientific name | `Arabidopsis thaliana` |
-| `--limit-genes` | Number of genes to process | `100` |
-| `--task-type` | `binary` (Stress/No-Stress) or `multiclass` | `binary` |
-| `--mined-data` | Input CSV path (Auto-generated if skipped) | `datasets/...` |
 
 ---
 

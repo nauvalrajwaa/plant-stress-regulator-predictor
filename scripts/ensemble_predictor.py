@@ -619,20 +619,52 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     
     print(f"      -> Checkpoints will be saved to: {ckpt_dir}")
 
+    # Dynamic Hyperparams based on Model Size
+    # Re-evaluate flags if needed, or rely on earlier definitions if in scope.
+    is_dnabert = "dnabert" in model_source_path.lower()
+    is_agront = "agro" in model_source_path.lower() or "nucleotide" in model_source_path.lower()
+
+    if is_agront:
+        # Agro-NT (1B params) requires massive memory saving
+        batch_size = 1 
+        grad_acc = 16   # effective batch ~16
+        use_fp16 = torch.cuda.is_available() # Use Mixed Precision if CUDA
+        use_grad_ckpt = True # Essential for 1B model to trade compute for memory
+        print("      -> [Config] Agro-NT detected: Using BatchSize=1, GradAccum=16, GradCheckpoint=True, FP16={use_fp16}")
+    elif is_dnabert:
+        # DNABERT-2 (117M) but complex attention
+        batch_size = 4
+        grad_acc = 4
+        use_fp16 = torch.cuda.is_available()
+        use_grad_ckpt = False # Flash Attention usually handles it, but safety first
+        print(f"      -> [Config] DNABERT detected: Using BatchSize={batch_size}, GradAccum={grad_acc}, FP16={use_fp16}")
+    else:
+        # Standard PlantBERT (small)
+        # Check for MPS (Apple Silicon) to avoid "Process 14.66GB" type errors on shared memory if 16 is too high
+        is_mps = torch.backends.mps.is_available()
+        batch_size = 8 if is_mps else 16
+        grad_acc = 2 if is_mps else 1
+        use_fp16 = False # MPS doesn't fully stabilize with fp16 in Trainer sometimes
+        use_grad_ckpt = False
+        print(f"      -> [Config] Standard Model: Using BatchSize={batch_size}")
+
     training_args = TrainingArguments(
         output_dir=ckpt_dir,
         overwrite_output_dir=True,
-        eval_strategy="epoch",  # Updated from evaluation_strategy for newer Transformers
+        eval_strategy="epoch",  
         save_strategy="epoch",
-        num_train_epochs=3, # Reduced slightly for interactive speed, user can increase
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
+        num_train_epochs=3,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=grad_acc,
+        fp16=use_fp16,
+        gradient_checkpointing=use_grad_ckpt,
         learning_rate=2e-5,
         weight_decay=0.01,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
         logging_steps=10,
-        report_to="none" # Disable WandB/MLFlow
+        report_to="none" 
     )
     
     trainer = Trainer(
