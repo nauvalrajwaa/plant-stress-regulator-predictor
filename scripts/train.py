@@ -6,6 +6,7 @@ import re
 import time
 import pandas as pd
 from Bio import Entrez
+from urllib.error import HTTPError  # FIX: Import library standar untuk handling error jaringan
 
 # Add script directory to path to import ensemble_predictor
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,94 +23,118 @@ except ImportError:
     try:
         from scripts.ensemble_predictor import train_multimodel_ml, train_plantbert_from_mined_data, evaluate_models_on_holdout, predict_with_new_models
     except ImportError:
-        print("[ERROR] Could not import ensemble_predictor. Make sure it is in the scripts/ folder.")
-        sys.exit(1)
+        # Define dummy functions if ML modules are missing to allow mining to proceed
+        def train_multimodel_ml(*args, **kwargs): return None, None
+        def train_plantbert_from_mined_data(*args, **kwargs): return None, None
+        def evaluate_models_on_holdout(*args, **kwargs): pass
+        def predict_with_new_models(*args, **kwargs): pass
+        print("[WARN] Could not import ensemble_predictor. ML Training steps will be skipped.")
 
 # =============================================================================
 # STEP 1: TARGET IDENTIFICATION (NCBI SEARCH)
 # =============================================================================
 def step1_search_ncbi(email, keywords, organism, output_file="list_gen_stres.txt"):
     """
-    Searches NCBI Gene database for Arabidopsis thaliana genes associated with stress keywords.
+    Searches NCBI Gene database, with fallback to Nucleotide database if Gene DB fails.
     """
-    print(f"--- STEP 1: SEARCH NCBI GENE DATABASE ---")
+    print(f"--- STEP 1: SEARCH NCBI DATABASE ---")
     Entrez.email = email
+    Entrez.tool = "StressRegionPredictor"
     
     # Query Search
-    term_query = f'"{organism}"[Orgn] AND ({ " OR ".join(keywords) })'
-    locus_tag_pattern = re.compile(r'AT[1-5MC]G\d{5}', re.IGNORECASE)
+    quoted_keywords = [f'"{k}"' for k in keywords]
+    base_query = f'"{organism}"[Orgn] AND ({ " OR ".join(quoted_keywords) })'
+    
+    candidates = set()
+    search_success = False
 
+    # --- STRATEGY A: Try GENE Database ---
     try:
-        print(f"[1/3] Sending request to NCBI...")
-        search_handle = Entrez.esearch(db="gene", term=term_query, retmax=10000, usehistory="y")
-        search_results = Entrez.read(search_handle)
+        print(f"[1/3] Attempting search in 'gene' database...")
+        search_handle = Entrez.esearch(db="gene", term=base_query, retmax=5000, usehistory="y")
+        try:
+            search_results = Entrez.read(search_handle, validate=False)
+        except TypeError:
+            search_results = Entrez.read(search_handle)
         search_handle.close()
         
         count = int(search_results["Count"])
-        webenv = search_results["WebEnv"]
-        query_key = search_results["QueryKey"]
         
-        print(f"      -> Found {count} candidates.")
-        
-        if count == 0:
-            return
-
-        print(f"[2/3] Filtering valid accessions...")
-        valid_accessions = set()
-        batch_size = 300
-        
-        for start in range(0, count, batch_size):
-            fetch_handle = Entrez.esummary(
-                db="gene", 
-                retstart=start, 
-                retmax=batch_size, 
-                webenv=webenv, 
-                query_key=query_key
-            )
-            data = Entrez.read(fetch_handle)
-            fetch_handle.close()
+        if count > 0:
+            print(f"      -> Found {count} candidates in Gene DB.")
+            webenv = search_results["WebEnv"]
+            query_key = search_results["QueryKey"]
             
-            for doc in data['DocumentSummarySet']['DocumentSummary']:
-                potential_ids = []
-                if 'Name' in doc: potential_ids.append(doc['Name'])
-                if 'OtherAliases' in doc and doc['OtherAliases']:
-                    aliases = doc['OtherAliases'].split(',')
-                    potential_ids.extend([a.strip() for a in aliases])
-
-                selected_id = None
-                for pid in potential_ids:
-                    if locus_tag_pattern.fullmatch(pid):
-                        selected_id = pid.upper()
-                        break 
+            batch_size = 300
+            for start in range(0, count, batch_size):
+                fetch_handle = Entrez.esummary(db="gene", retstart=start, retmax=batch_size, webenv=webenv, query_key=query_key)
+                try:
+                    data = Entrez.read(fetch_handle, validate=False)
+                except TypeError:
+                    data = Entrez.read(fetch_handle)
+                fetch_handle.close()
                 
-                if not selected_id and 'Name' in doc:
-                    selected_id = doc['Name']
+                doc_set = data.get('DocumentSummarySet', {}).get('DocumentSummary', [])
+                for doc in doc_set:
+                    if 'Name' in doc: candidates.add(doc['Name'])
+                    elif 'OtherAliases' in doc and doc['OtherAliases']:
+                        candidates.add(doc['OtherAliases'].split(',')[0].strip())
                 
-                if selected_id:
-                    valid_accessions.add(selected_id)
-            
-            print(f"      -> Progress: {len(valid_accessions)} valid IDs...", end='\r')
-            time.sleep(0.5)
-
-        print(f"\n      -> Finished! {len(valid_accessions)} IDs ready.")
-
-        with open(output_file, "w") as f:
-            for acc in sorted(valid_accessions):
-                f.write(acc + "\n")
-        
-        print(f"\n[SUCCESS] Saved to: {output_file}")
+                print(f"      -> Progress: {len(candidates)} IDs...", end='\r')
+            search_success = True
+        else:
+            print("      -> No results in Gene DB.")
 
     except Exception as e:
-        print(f"\n[ERROR] {e}")
+        print(f"      [WARN] Gene DB search failed: {e}")
+
+    # --- STRATEGY B: Fallback to NUCLEOTIDE Database ---
+    if not search_success or len(candidates) == 0:
+        print(f"\n      -> Switching to 'nucleotide' database fallback...")
+        try:
+            nucleotide_query = base_query + " AND biomol_mrna[PROP] AND refseq[filter]"
+            search_handle = Entrez.esearch(db="nucleotide", term=nucleotide_query, retmax=5000, usehistory="y")
+            search_results = Entrez.read(search_handle)
+            search_handle.close()
+            
+            count = int(search_results["Count"])
+            print(f"      -> Found {count} mRNA sequences.")
+            
+            if count > 0:
+                webenv = search_results["WebEnv"]
+                query_key = search_results["QueryKey"]
+                batch_size = 300
+                
+                for start in range(0, count, batch_size):
+                    fetch_handle = Entrez.esummary(db="nucleotide", retstart=start, retmax=batch_size, webenv=webenv, query_key=query_key)
+                    data = Entrez.read(fetch_handle, validate=False)
+                    fetch_handle.close()
+                    
+                    for doc in data:
+                        # Prioritize Caption (Accession)
+                        acc = doc.get('Caption') or doc.get('AccessionVersion')
+                        if acc: candidates.add(acc)
+                    print(f"      -> Progress: {len(candidates)} IDs...", end='\r')
+
+        except Exception as e:
+            print(f"\n[ERROR] Nucleotide search also failed: {e}")
+
+    print(f"\n      -> Finished! {len(candidates)} IDs ready.")
+
+    if candidates:
+        with open(output_file, "w") as f:
+            for acc in sorted(candidates):
+                f.write(acc + "\n")
+        print(f"\n[SUCCESS] Saved to: {output_file}")
+    else:
+        print(f"\n[ERROR] No candidates found. Check keywords/organism.")
 
 # =============================================================================
 # STEP 2: MINING & MOTIF SCANNING
 # =============================================================================
 def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, output_csv="Dataset_Mined.csv", limit_genes=100, organism="Arabidopsis thaliana", max_seq_len=20000, flank_bp=50):
     """
-    Downloads sequences and scans for motifs.
-    If task_type='multiclass', labels are derived from specific stress keywords found in motifs.
-    If task_type='binary', all retrieved sequences are Label=1.
+    Downloads sequences and scans for motifs. Supports both Gene Names and Accession IDs.
     """
     print(f"\n--- STEP 2: MINING SEQUENCES ---")
     print(f"Config: Organism={organism}, MaxSeqLen={max_seq_len}, FlankBP={flank_bp}, Mode={task_type}")
@@ -149,7 +174,7 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
             for k in motif_filter_keywords:
                 if k.upper() in m_id:
                     is_match = True
-                    matched_category = k # Capture the category (e.g., ABRE)
+                    matched_category = k
                     break
             
             if is_match and len(str(m_seq)) >= 3:
@@ -164,16 +189,26 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
         print(f"[ERROR] PLACE CSV not found: {place_csv_path}")
         return
 
-    # Fetch Function
-    def fetch_sequence_strict(locus_tag):
+    # Fetch Function (SMART)
+    def fetch_sequence_smart(target_id):
         try:
-            query = f"{locus_tag}[Gene Name] AND {organism}[Orgn] AND refseq[filter] AND biomol_mrna[PROP]"
-            handle = Entrez.esearch(db="nucleotide", term=query, retmax=1)
-            record = Entrez.read(handle)
-            handle.close()
+            # Check if input looks like an Accession (e.g., NM_1234, XM_5678)
+            is_accession = re.match(r'^[A-Z]{2}_?\d+(\.\d+)?$', target_id, re.IGNORECASE)
+            seq_id = None
             
-            if not record['IdList']: return None, "No mRNA found"
-            seq_id = record['IdList'][0]
+            if is_accession:
+                seq_id = target_id
+            else:
+                # Treat as Gene Name
+                query = f"{target_id}[Gene Name] AND {organism}[Orgn] AND refseq[filter] AND biomol_mrna[PROP]"
+                handle = Entrez.esearch(db="nucleotide", term=query, retmax=1)
+                record = Entrez.read(handle)
+                handle.close()
+                if record['IdList']:
+                    seq_id = record['IdList'][0]
+
+            if not seq_id:
+                return None, "Not found"
             
             with Entrez.efetch(db="nucleotide", id=seq_id, rettype="fasta", retmode="text") as handle:
                 fasta_data = handle.read()
@@ -202,7 +237,10 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
     
     for i, gid in enumerate(target_genes):
         print(f"[{i+1}/{len(target_genes)}] {gid}: ", end="")
-        seq, status = fetch_sequence_strict(gid)
+        sys.stdout.flush()
+        
+        # FIX: Use smart fetch
+        seq, status = fetch_sequence_smart(gid)
         
         if seq:
             print(f"OK ({len(seq)}bp). Scan...", end=" ")
@@ -215,7 +253,7 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
                         # Apply Multiclass Logic
                         label = 1
                         if task_type == 'multiclass':
-                            label = m['category'] # Use the keyword ("ABRE", "MYB") as label
+                            label = m['category']
 
                         results.append({
                             'Gene_Locus': gid,
@@ -243,16 +281,38 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
 # =============================================================================
 # STEP 3: TRAINING
 # =============================================================================
-def step3_train(mined_csv, task_type):
+def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_models=True, base_model_path=None):
     print(f"\n--- STEP 3: TRAINING MODELS ({task_type}) ---")
     
-    # 1. ML Benchmark
-    best_ml_model, vectorizer = train_multimodel_ml(mined_csv, task_type=task_type)
-    
-    # 2. PlantBERT
-    plantbert_model, bert_tokenizer = train_plantbert_from_mined_data(mined_csv, task_type=task_type)
-    
-    return best_ml_model, vectorizer, plantbert_model, bert_tokenizer
+    try:
+        # 1. ML Benchmark
+        # Pass organism and output dir to allow naming: {Model}_{Acc}_{Organism}.pkl
+        best_ml_model, vectorizer = train_multimodel_ml(
+            mined_csv, 
+            output_dir=models_dir, 
+            organism=organism, 
+            task_type=task_type,
+            save_model=save_models
+        )
+        
+        # 2. PlantBERT
+        # Pass organism and output dir
+        plantbert_model, bert_tokenizer = train_plantbert_from_mined_data(
+            mined_csv, 
+            output_dir=models_dir, 
+            organism=organism,
+            task_type=task_type,
+            save_model=save_models,
+            base_model_path=base_model_path
+        )
+        
+        return best_ml_model, vectorizer, plantbert_model, bert_tokenizer
+    except Exception as e:
+        print(f"[ERROR] Training crashed: {e}")
+        # traceback would be good here, but keeping it simple
+        import traceback
+        traceback.print_exc()
+        return None, None, None, None
 
 # =============================================================================
 # MAIN CLI
@@ -271,7 +331,7 @@ Examples:
   3. Multiclass Training:
      python scripts/train.py --step train --task-type multiclass --mined-data "My_Rice_Data.csv"
         """,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     # General args
@@ -286,13 +346,63 @@ Examples:
     
     # Paths
     parser.add_argument("--gene-list", type=str, default=None, help="Path to gene list file (Auto-generated if None)")
-    parser.add_argument("--place-csv", type=str, default="/Users/user/Downloads/02. PROJECTS/Stress-region-predictor/train/PLACE_Parsed_Complete_V2.csv", help="Path to PLACE motif CSV")
+    parser.add_argument("--place-csv", type=str, default=None, help="Path to PLACE motif CSV (Auto-detected if None)")
     parser.add_argument("--mined-data", type=str, default=None, help="Path to output mined CSV (Auto-generated if None)")
     parser.add_argument("--limit-genes", type=int, default=100, help="Limit number of genes to mine (0 = No limit)")
+    parser.add_argument("--logo-out", type=str, default=None, help="Output directory for Logo plots")
     
+    # Save Model Flag
+    parser.add_argument("--save-models", action="store_true", default=True, help="Save trained models (default: True)")
+    parser.add_argument("--no-save-models", action="store_false", dest="save_models", help="Disable model saving")
+    
+    # Model & LLM Flags
+    # --model-path takes precedence if provided. --llm-model sets --model-path to presets.
+    parser.add_argument("--model-path", type=str, default=None, help="Path to base model (PlantBERT or DNABERT, local or HF ID)")
+    parser.add_argument("--llm-model", type=str, default="plantbert", choices=["plantbert", "dnabert2", "custom"], 
+                        help="Select LLM preset: 'plantbert' (nigelhartm/PlantBERT) or 'dnabert2' (zhihan1996/DNABERT-2-117M)")
+
     args = parser.parse_args()
 
     # Dynamic Path Generation
+    # Define project root
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))
+    
+    # Define Models Directory
+    models_dir = os.path.join(project_root, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    # Resolve Model Path based on LLM Selection
+    # If explicit --model-path is given, it overrides the preset.
+    if args.model_path is None:
+        if args.llm_model.lower() == "dnabert2":
+             args.model_path = "zhihan1996/DNABERT-2-117M"
+        elif args.llm_model.lower() == "plantbert":
+             # Default fallback is local PlantBERT if present, else HF ID
+             # Checking if local PlantBERT exists to maintain backward compatibility
+             local_plantbert = os.path.join(project_root, "PlantBERT")
+             if os.path.exists(local_plantbert):
+                 args.model_path = local_plantbert
+                 print(f"[INFO] Using local PlantBERT found at: {local_plantbert}")
+             else:
+                 args.model_path = "nigelhartm/PlantBERT"
+        else:
+             # Default generic fallback
+             args.model_path = os.path.join(project_root, "PlantBERT")
+    
+    # Resolve PLACE CSV
+    if args.place_csv is None:
+        possible_paths = [
+             os.path.join(project_root, "train_1", "data", "PLACE_Parsed_Complete_V2.csv"),
+             os.path.join(project_root, "train", "data", "PLACE_Parsed_Complete_V2.csv"),
+             os.path.join(project_root, "data", "PLACE_Parsed_Complete_V2.csv")
+        ]
+        for p in possible_paths:
+             if os.path.exists(p):
+                 args.place_csv = p
+                 break
+        if args.place_csv is None:
+             print("[WARN] Could not auto-detect PLACE_Parsed_Complete_V2.csv. Please provide --place-csv.")
+
     # Create datasets folder if not exists
     datasets_dir = os.path.join(current_dir, "..", "datasets")
     os.makedirs(datasets_dir, exist_ok=True)
@@ -313,6 +423,8 @@ Examples:
     print(f"Output Directory: {datasets_dir}")
     print(f"Gene List: {args.gene_list}")
     print(f"Mined Sequence Data: {args.mined_data}")
+    print(f"Models Directory: {models_dir if args.save_models else 'Not saving'}")
+    print(f"Base Model Path: {args.model_path}")
     print(f"-------------------------")
     
     # Define Keywords for Search
@@ -330,10 +442,21 @@ Examples:
         step2_mine_sequences(args.email, args.gene_list, args.task_type, args.place_csv, args.mined_data, limit, args.organism, args.max_seq_len, args.flank_bp)
         
     if args.step in ["all", "train"]:
-        ml_model, vect, bert_model, bert_tok = step3_train(args.mined_data, args.task_type)
+        # Update call to accept new arguments (organism, models_dir, save_models)
+        ml_model, vect, bert_model, bert_tok = step3_train(
+            args.mined_data, 
+            args.task_type,
+            organism=args.organism,
+            models_dir=models_dir,
+            save_models=args.save_models,
+            base_model_path=args.model_path
+        )
+        
+        if ml_model is None or bert_model is None:
+            print("\n[ERROR] Training returned None. Please check if mined data exists and is not empty.")
         
         # Immediate Evaluation if 'train' is independent step or part of 'all'
-        if args.step == "train" or args.step == "all":
+        if (args.step == "train" or args.step == "all") and ml_model is not None:
             print("\n--- STEP 4: EVALUATION ---")
             evaluate_models_on_holdout(args.mined_data, ml_model, vect, bert_model, bert_tok)
             predict_with_new_models(args.mined_data, ml_model, vect, bert_model, bert_tok)

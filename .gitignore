@@ -2,10 +2,11 @@ plot/
 __pycache__/
 env/
 PlantBERT/
+DNABERT-2-117M/
 runs/
 datasets/
 models/
-./DS_Store
+.DS_Store
 *.pyc
 .ipynb_checkpoints
 

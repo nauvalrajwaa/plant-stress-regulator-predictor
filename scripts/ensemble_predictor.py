@@ -13,6 +13,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import time
+
+try:
+    import einops
+except ImportError:
+    print("\n[CRITICAL WARNING] 'einops' library is not found. DNABERT-2 requires it!")
+    print("If you are using DNABERT-2, please run: pip install einops\n")
+
 from transformers import (
     AutoModelForSequenceClassification, 
     AutoTokenizer, 
@@ -21,12 +28,14 @@ from transformers import (
 )
 
 # =============================================================================
-# CONFIGURATION
+# GLOBAL PATH CONFIGURATION
 # =============================================================================
-# Paths adjusted to Match User's Workspace
-TRAIN_DATA_PATH = "/Users/user/Downloads/02. PROJECTS/Stress-region-predictor/train/data/finetune_expanded_train.csv"
-BERT_MODEL_PATH = "/Users/user/Downloads/02. PROJECTS/Stress-region-predictor/train/plantbert/model_finetune_expanded/final"
-BASE_BERT_PATH = "/Users/user/Downloads/02. PROJECTS/Stress-region-predictor/train/plantbert/PlantBERT"
+# Define project root (Parent of 'scripts/')
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Default Base Paths
+BASE_BERT_PATH = os.path.join(PROJECT_ROOT, "PlantBERT")
+TRAIN_DATA_PATH = os.path.join(PROJECT_ROOT, "train", "data", "finetune_expanded_train.csv")
 
 def predict_stress_ensemble(mined_data_path):
     """
@@ -268,7 +277,7 @@ def prepare_augmented_data(mined_data_path, task_type="binary"):
     train_df, test_df = train_test_split(df_full, test_size=0.2, random_state=42, stratify=df_full['labels'])
     return train_df, test_df
 
-def train_multimodel_ml(mined_data_path, output_model_path="best_ml_model.pkl", task_type="binary"):
+def train_multimodel_ml(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True):
     """
     Trains Multiple ML Models (SVM, RF, GB, LR) on the mined data + random negatives.
     Performs Grid Search to find the best hyperparameters.
@@ -344,23 +353,40 @@ def train_multimodel_ml(mined_data_path, output_model_path="best_ml_model.pkl", 
     
     print(f"\n      -> 🏆 WINNER: {best_model_name} (Acc: {best_overall_acc*100:.2f}%)")
     
-    # 6. Save
-    print(f"      -> Saving winner to {output_model_path}...")
-    joblib.dump(best_overall_model, output_model_path)
-    joblib.dump(vectorizer, output_model_path.replace(".pkl", "_vectorizer.pkl"))
+    # 6. Save (Updated Logic)
+    if save_model and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        # Format: {model_name}_{accuracy}_{organism}.pkl
+        acc_str = f"{best_overall_acc*100:.1f}"
+        org_clean = organism.replace(" ", "_")
+        
+        filename = f"{best_model_name}_{acc_str}_{org_clean}.pkl"
+        output_path = os.path.join(output_dir, filename)
+        
+        print(f"      -> Saving winner to: {output_path}")
+        joblib.dump(best_overall_model, output_path)
+        joblib.dump(vectorizer, output_path.replace(".pkl", "_vectorizer.pkl"))
+    else:
+        print("      -> Saving skipped (flag disabled).")
     
     return best_overall_model, vectorizer
 
-def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_finetuned_mined", task_type="binary"):
+
+def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True, base_model_path=None):
     """
     Trains PlantBERT using the mined data + random negatives.
     Replicates the logic from finetune_plantbert_expanded.py but callable.
     """
-    print(f"\n--- STARTING PLANTBERT RETRAINING ({task_type.upper()}) ---")
+    print(f"\n--- STARTING TRANSFORMER RETRAINING ({task_type.upper()}) ---")
+    
+    # Use provided base path or default global
+    # FIX: Use global BASE_BERT_PATH if argument is None
+    model_source_path = base_model_path if base_model_path else BASE_BERT_PATH
+    print(f"      -> Base Model Source: {model_source_path}")
     
     # 1. Prepare Data
     train_df, test_df = prepare_augmented_data(mined_data_path, task_type)
-    if train_df is None: return
+    if train_df is None: return None, None
     
     print(f"      -> Data split: {len(train_df)} Train, {len(test_df)} Test")
     
@@ -374,21 +400,24 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_
         "test": ds.Dataset.from_pandas(test_df)
     })
     
+
     # 2. Setup Model & Tokenizer
     # FIX: Always load tokenizer from the Base path to avoid missing file errors in checkpoints
-    print(f"      -> Loading Tokenizer from: {BASE_BERT_PATH}")
+    print(f"      -> Loading Tokenizer from: {model_source_path}")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(BASE_BERT_PATH)
+        # Trust remote code is sometimes needed for DNABERT-2 or custom models
+        tokenizer = AutoTokenizer.from_pretrained(model_source_path, trust_remote_code=True)
     except OSError:
         # If user hasn't downloaded it yet, let it download or fail
-        print(f"[WARNING] Local base tokenizer not found at {BASE_BERT_PATH}. Trying 'bert-base-uncased' as fallback...")
+        print(f"[WARNING] Local base tokenizer not found at {model_source_path}. Trying 'bert-base-uncased' as fallback...")
         tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({'pad_token': '<pad>'})
         
     def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=128)
+        # Increased max_length to 512 for better context if model supports it
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
         
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
     # Handle potential column differences
@@ -396,20 +425,50 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_
     tokenized_datasets = tokenized_datasets.remove_columns(cols_to_remove)
     tokenized_datasets.set_format("torch")
     
-    # Load Model - Try Checkpoint, Fallback to Base
-    model_path = BASE_BERT_PATH
-    if os.path.exists(BERT_MODEL_PATH):
-        # Only use if it looks valid (simple check)
-        if os.path.exists(os.path.join(BERT_MODEL_PATH, "config.json")):
-             print(f"      -> Found potential checkpoint: {BERT_MODEL_PATH}")
-             model_path = BERT_MODEL_PATH
-    
-    print(f"      -> Loading Model Weights from: {model_path}")
+    # Load Model
+    print(f"      -> Loading Model Weights from: {model_source_path}")
     try:
-        model = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels, ignore_mismatched_sizes=True)
+        # DNABERT-2 / Custom Model Debugging
+        if "DNABERT" in model_source_path or "dnabert" in model_source_path.lower():
+             print("      -> Detected DNABERT model. Verifying dependencies...")
+             
+             # Attempt to pre-validate custom code loading to expose hidden import errors
+             bert_layers_path = os.path.join(model_source_path, "bert_layers.py")
+             if os.path.isdir(model_source_path) and os.path.exists(bert_layers_path):
+                 import sys, importlib.util
+                 try:
+                     spec = importlib.util.spec_from_file_location("bert_layers_check", bert_layers_path)
+                     if spec and spec.loader:
+                         module = importlib.util.module_from_spec(spec)
+                         # We don't register it in sys.modules to avoid conflict, just execute to test
+                         spec.loader.exec_module(module)
+                         print("      -> 'bert_layers.py' is valid and loadable.")
+                 except Exception as import_err:
+                     print(f"\n      -> [CRITICAL ERROR] Custom model code failed to load: {import_err}")
+                     print(f"         Make sure you have installed: einops")
+                     print(f"         This failure causes Transformers to fallback to standard BERT, leading to Config Mismatches.\n")
+                     # We assume trust_remote_code will fail similarly, but let it try or just raise here
+                     raise import_err
+
+             model = AutoModelForSequenceClassification.from_pretrained(
+                model_source_path, 
+                num_labels=num_labels,
+                trust_remote_code=True,
+                ignore_mismatched_sizes=True
+            )
+        else:
+            # Standard BERT / PlantBERT
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(model_source_path, trust_remote_code=True, num_labels=num_labels)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_source_path, 
+                config=config,
+                ignore_mismatched_sizes=True,
+                trust_remote_code=True
+            )
     except Exception as e:
-        print(f"      -> [Warning] Failed to load {model_path} ({e}). Reverting to Base.")
-        model = AutoModelForSequenceClassification.from_pretrained(BASE_BERT_PATH, num_labels=num_labels, ignore_mismatched_sizes=True)
+        print(f"      -> [ERROR] Failed to load {model_source_path}: {e}")
+        return None, None
 
     model.resize_token_embeddings(len(tokenizer))
 
@@ -421,11 +480,13 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_
         predictions = np.argmax(logits, axis=-1)
         return metric.compute(predictions=predictions, references=labels)
 
+
     # 4. Trainer
-    output_dir = os.path.join(os.path.dirname(BERT_MODEL_PATH), output_dir_base)
+    # Temp dir for checkpoints, final save is controlled below
+    ckpt_dir = os.path.join(PROJECT_ROOT, "models", "plantbert_checkpoints")
     
     training_args = TrainingArguments(
-        output_dir=output_dir,
+        output_dir=ckpt_dir,
         overwrite_output_dir=True,
         evaluation_strategy="epoch",
         save_strategy="epoch",
@@ -451,12 +512,24 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir_base="plantbert_
     print(f"      -> Starting Training (this may take a while)...")
     trainer.train()
     
-    print(f"      -> Saving PlantBERT to {output_dir}/final")
-    trainer.save_model(f"{output_dir}/final")
-    
     # Eval
     metrics = trainer.evaluate()
+    final_acc = metrics['eval_accuracy']
     print(f"      -> Final Evaluation: {metrics}")
+    
+    if save_model and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        # Clean naming for folder
+        acc_str = f"{final_acc*100:.1f}"
+        org_clean = organism.replace(" ", "_")
+        folder_name = f"PlantBERT_{acc_str}_{org_clean}"
+        full_path = os.path.join(output_dir, folder_name)
+        
+        print(f"      -> Saving PlantBERT to {full_path}")
+        trainer.save_model(full_path)
+        tokenizer.save_pretrained(full_path)
+    else:
+        print("      -> Saving skipped.")
     
     return trainer.model, tokenizer
 
