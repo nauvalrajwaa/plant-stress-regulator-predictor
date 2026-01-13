@@ -505,7 +505,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     training_args = TrainingArguments(
         output_dir=ckpt_dir,
         overwrite_output_dir=True,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",  # Updated from evaluation_strategy for newer Transformers
         save_strategy="epoch",
         num_train_epochs=3, # Reduced slightly for interactive speed, user can increase
         per_device_train_batch_size=16,
@@ -580,7 +580,8 @@ def predict_with_new_models(target_csv, svm_model=None, vectorizer=None, bert_mo
     bert_probs = []
     
     if bert_model and bert_tokenizer:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        print(f"         [INFO] Using device: {device}")
         bert_model.to(device)
         bert_model.eval()
         
@@ -646,7 +647,7 @@ def evaluate_models_on_holdout(mined_data_path, svm_model, vectorizer, bert_mode
     # 2. Evaluate PlantBERT
     if bert_model and bert_tokenizer:
         print("\n>>> 2. PLANTBERT PERFORMANCE (Scanning...)")
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
         bert_model.to(device)
         bert_model.eval()
         
