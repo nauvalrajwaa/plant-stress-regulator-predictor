@@ -82,7 +82,8 @@ Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBE
 | `--step` | Steps to execute: `all` (Full), `search` (NCBI), `mine` (Sequences), `train` (Fine-tune), `eval`. | `all` |
 | `--email` | **[Required]** Email address (for NCBI Entrez usage). | `user@example.com` |
 | **Model Configuration** | | |
-| `--llm-model` | **[New]** Choose Foundation Model: `plantbert`, `dnabert2`, or `agront` (1B params). | `plantbert` |
+| `--llm-model` | **[New]** Choose Foundation Model: `plantbert`, `dnabert2`, `dnabert1`, or `agront`. | `plantbert` |
+| `--kmer` | **[New]** K-mer size for **DNABERT-1** (3, 4, 5, or 6). | `6` |
 | `--save-models` | Save valid model checkpoints to `runs/`. Use `--no-save-models` to disable. | `True` |
 | `--model-path` | Path to a specific base model (local or HF) if not using presets. | `None` |
 | **Data Mining** | | |
@@ -118,7 +119,18 @@ python scripts/train.py \
     --limit-genes 500
 ```
 
-**3. Dataset Creation Only (No Training):**
+**3. Train with DNABERT-1 (K-mer based):**
+*Legacy support for fixed K-mer tokenization (default 6-mer).*
+```bash
+python scripts/train.py \
+    --step all \
+    --organism "Glycine max" \
+    --llm-model dnabert1 \
+    --kmer 6 \
+    --limit-genes 200
+```
+
+**4. Dataset Creation Only (No Training):**
 ```bash
 python scripts/train.py \
     --step mine \

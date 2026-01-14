@@ -358,8 +358,10 @@ Examples:
     # Model & LLM Flags
     # --model-path takes precedence if provided. --llm-model sets --model-path to presets.
     parser.add_argument("--model-path", type=str, default=None, help="Path to base model (PlantBERT or DNABERT, local or HF ID)")
-    parser.add_argument("--llm-model", type=str, default="plantbert", choices=["plantbert", "dnabert2", "agront", "custom"], 
-                        help="Select LLM preset: 'plantbert', 'dnabert2', or 'agront' (InstaDeepAI/agro-nucleotide-transformer-1b)")
+    parser.add_argument("--llm-model", type=str, default="plantbert", choices=["plantbert", "dnabert2", "dnabert1", "agront", "custom"], 
+                        help="Select LLM preset: 'plantbert', 'dnabert2', 'dnabert1', or 'agront'")
+    parser.add_argument("--kmer", type=int, default=6, choices=[3, 4, 5, 6],
+                        help="K-mer size for DNABERT-1 (3, 4, 5, or 6). Default: 6")
 
     args = parser.parse_args()
 
@@ -374,9 +376,11 @@ Examples:
     # Format: run_{YYYYMMDD_HHMMSS}_{Organism}_{ModelType}
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     
-    if args.llm_model == "dnabert2" or (args.model_path and "dnabert" in args.model_path.lower()):
-        model_type_tag = "dnabert"
-    elif args.llm_model == "agront" or (args.model_path and "agro" in args.model_path.lower()):
+    if args.llm_model == "dnabert2" or (args.model_path and "dnabert-2" in str(args.model_path).lower()):
+        model_type_tag = "dnabert2"
+    elif args.llm_model == "dnabert1" or (args.model_path and "dna_bert" in str(args.model_path).lower()):
+        model_type_tag = "dnabert1"
+    elif args.llm_model == "agront" or (args.model_path and "agro" in str(args.model_path).lower()):
         model_type_tag = "agront"
     else:
         model_type_tag = "plantbert"
@@ -406,6 +410,9 @@ Examples:
     if args.model_path is None:
         if args.llm_model.lower() == "dnabert2":
              args.model_path = "zhihan1996/DNABERT-2-117M"
+        elif args.llm_model.lower() == "dnabert1":
+             # DNABERT-1 models are k-mer specific
+             args.model_path = f"zhihan1996/DNA_bert_{args.kmer}"
         elif args.llm_model.lower() == "agront":
              args.model_path = "InstaDeepAI/agro-nucleotide-transformer-1b"
         else:
@@ -471,11 +478,25 @@ Examples:
         
     if args.step in ["all", "train"]:
         # Update call to accept new arguments (organism, models_dir, save_models)
+        # PASS KMER if DNABERT1 logic needs it (via global or arg injection - but wait, ensemble_predictor doesn't take kmer arg yet)
+        # However, run_dnabert1_finetuner takes it. We can smuggle it via base_model_path detection in ensemble_predictor
+        # OR we update step3_train signature.
+        
+        # NOTE: Scripts dnabert1_finetuner uses args.kmer inside wrapper, but we call it from ensemble_predictor.
+        # We need to ensure kmer is passed down if needed.
+        # Simple hack: Append kmer to model path string if using dnabert1? No, cleaner to pass explicit arg.
+        
+        # Let's rely on model path containing 'DNA_bert_{k}' which we set earlier.
+        # Scripts logic will parse it or we can pass kmer as kwargs effectively?
+        # Actually ensemble_predictor.train_plantbert_from_mined_data accepts **kwargs or I should update it.
+        # Given I cannot easily change ensemble_predictor sig without updating all calls...
+        # Wait, I just edited ensemble_predictor.py in prev turn. I can edit it again to accept `kmer` arg.
+        
         ml_model, vect, bert_model, bert_tok = step3_train(
             args.mined_data, 
             args.task_type,
             organism=args.organism,
-            models_dir=models_dir, # Now pointing to runs/run_ID/models
+            models_dir=models_dir, 
             save_models=args.save_models,
             base_model_path=args.model_path
         )

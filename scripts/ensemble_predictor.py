@@ -411,6 +411,104 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     num_labels = len(train_df['labels'].unique())
     print(f"      -> Detected {num_labels} classes.")
     
+    # ------------------------------------------------------------------
+    # SPECIALIZED ROUTE: DNABERT-2 (Using Notebook Wrapper)
+    # ------------------------------------------------------------------
+    if "dnabert" in model_source_path.lower() and "zhihan1996" in model_source_path.lower():
+        print("\n      -> [Pipeline] Redirecting to Specialized DNABERT-2 Module...")
+        try:
+            # Dynamic import to handle dependency
+            import sys
+            sys.path.append(os.path.dirname(__file__)) # Ensure scripts folder is in path
+            import dnabert2_finetuner
+            
+            # Prepare Temporary CSVs (Notebook expects CSV input)
+            models_dir_abs = os.path.abspath(output_dir) if output_dir else os.path.join(os.getcwd(), "models")
+            os.makedirs(models_dir_abs, exist_ok=True)
+            
+            # Rename columns to match DNABERT-2 expectations: [sequence, label]
+            train_tmp_path = os.path.join(models_dir_abs, "temp_train.csv")
+            test_tmp_path = os.path.join(models_dir_abs, "temp_test.csv")
+            
+            train_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(train_tmp_path, index=False)
+            test_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(test_tmp_path, index=False)
+            
+            # Run Finetuner
+            # Determine batch size dynamically
+            # DNABERT-2 can be heavy. Use small batch.
+            use_lora = False # Or make configurable? User didn't specify. Notebook default False.
+            
+            final_model, final_tokenizer = dnabert2_finetuner.run_dnabert2_finetuning(
+                train_csv_path=train_tmp_path,
+                val_csv_path=test_tmp_path,
+                output_dir=models_dir_abs,
+                model_name_or_path=model_source_path,
+                epochs=3,
+                batch_size=8, # Adjusted as per notebook
+                save_model=save_model,
+                use_lora=use_lora
+            )
+            
+            return final_model, final_tokenizer
+            
+        except ImportError as e:
+            print(f"[ERROR] Could not import dnabert2_finetuner: {e}")
+            print("Falling back to standard generic trainer...")
+        except Exception as e:
+            print(f"[ERROR] DNABERT-2 Fine-tuning failed: {e}")
+            print("Falling back to generic trainer...")
+            import traceback
+            traceback.print_exc()
+
+    # ------------------------------------------------------------------
+    # SPECIALIZED ROUTE: DNABERT-1 (Using Notebook Wrapper)
+    # ------------------------------------------------------------------
+    # Check for "DNA_bert_X" pattern specific to v1
+    if "dna_bert" in model_source_path.lower():
+        print("\n      -> [Pipeline] Redirecting to Specialized DNABERT-1 Module...")
+        try:
+            import sys
+            sys.path.append(os.path.dirname(__file__)) 
+            import dnabert1_finetuner
+            
+            models_dir_abs = os.path.abspath(output_dir) if output_dir else os.path.join(os.getcwd(), "models")
+            os.makedirs(models_dir_abs, exist_ok=True)
+            
+            # Export Temp Data
+            train_tmp_path = os.path.join(models_dir_abs, "temp_dnabert1_train.csv")
+            test_tmp_path = os.path.join(models_dir_abs, "temp_dnabert1_test.csv")
+            
+            # Use columns [sequence, label]
+            train_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(train_tmp_path, index=False)
+            test_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(test_tmp_path, index=False)
+            
+            # Extract K-mer from model name (e.g., DNA_bert_6 -> 6)
+            import re
+            kmer_match = re.search(r"dna_bert_(\d)", model_source_path.lower())
+            kmer_k = int(kmer_match.group(1)) if kmer_match else 6
+            print(f"      -> Detected K-mer from model name: {kmer_k}")
+
+            final_model, final_tokenizer = dnabert1_finetuner.run_dnabert1_finetuning(
+                train_csv_path=train_tmp_path,
+                val_csv_path=test_tmp_path,
+                output_dir=models_dir_abs,
+                kmer=kmer_k,
+                epochs=3,
+                batch_size=16, # DNABERT-1 is lighter than V2
+                save_model=save_model,
+                model_name_or_path=model_source_path
+            )
+            
+            return final_model, final_tokenizer
+            
+        except ImportError as e:
+            print(f"[ERROR] Could not import dnabert1_finetuner: {e}")
+        except Exception as e:
+            print(f"[ERROR] DNABERT-1 Fine-tuning failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+
     # Convert to HF Dataset
     dataset = ds.DatasetDict({
         "train": ds.Dataset.from_pandas(train_df),
