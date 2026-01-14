@@ -14,21 +14,23 @@ if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 try:
-    from ensemble_predictor import train_multimodel_ml, train_plantbert_from_mined_data, evaluate_models_on_holdout, predict_with_new_models
-except ImportError:
-    # Try parent directory if running from project root
-    project_root = os.path.abspath(os.path.join(current_dir, ".."))
-    sys.path.append(project_root)
-    # Using importlib to mimic notebook behavior if needed, but direct import is cleaner
+    # Attempt absolute import first (if running from root)
     try:
         from scripts.ensemble_predictor import train_multimodel_ml, train_plantbert_from_mined_data, evaluate_models_on_holdout, predict_with_new_models
     except ImportError:
-        # Define dummy functions if ML modules are missing to allow mining to proceed
-        def train_multimodel_ml(*args, **kwargs): return None, None
-        def train_plantbert_from_mined_data(*args, **kwargs): return None, None
-        def evaluate_models_on_holdout(*args, **kwargs): pass
-        def predict_with_new_models(*args, **kwargs): pass
-        print("[WARN] Could not import ensemble_predictor. ML Training steps will be skipped.")
+        # Attempt relative import (if running from scripts/)
+        from ensemble_predictor import train_multimodel_ml, train_plantbert_from_mined_data, evaluate_models_on_holdout, predict_with_new_models
+except ImportError as e:
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))
+    sys.path.append(project_root)
+    # Define dummy functions only for mining steps
+    def train_multimodel_ml(*args, **kwargs): return None, None
+    def train_plantbert_from_mined_data(*args, **kwargs): return None, None
+    def evaluate_models_on_holdout(*args, **kwargs): pass
+    def predict_with_new_models(*args, **kwargs): pass
+    # NOTE: Error details will be printed in step3_train where it matters.
+    def predict_with_new_models(*args, **kwargs): pass
+    print("[WARN] ML Training steps will be skipped.")
 
 # =============================================================================
 # STEP 1: TARGET IDENTIFICATION (NCBI SEARCH)
@@ -281,9 +283,29 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
 # =============================================================================
 # STEP 3: TRAINING
 # =============================================================================
-def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_models=True, base_model_path=None):
+def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_models=True, base_model_path=None, kmer=6):
     print(f"\n--- STEP 3: TRAINING MODELS ({task_type}) ---")
     
+    # LAZY IMPORT CHECK - Fail Fast here if libraries are missing
+    try:
+        import ensemble_predictor
+        # Force reload if it was a dummy module
+        import importlib
+        importlib.reload(ensemble_predictor)
+        from ensemble_predictor import train_multimodel_ml, train_plantbert_from_mined_data
+    except ImportError as e:
+        print("\n" + "!"*60)
+        print("[CRITICAL ERROR] Could not import 'ensemble_predictor.py'.")
+        print(f"Details: {e}")
+        print("!"*60)
+        print("Possible fixes:")
+        print("1. PIP INSTALL: check if 'datasets', 'scikit-learn', 'torch' are installed.")
+        print("   Command: pip install datasets scikit-learn torch transformers")
+        print("   (Note: 'evaluate' library is skipped for Python 3.6 compatibility)")
+        print("2. PATH: Ensure you are running from the project root.")
+        print("!"*60 + "\n")
+        return None, None, None, None
+
     try:
         # 1. ML Benchmark
         # Pass organism and output dir to allow naming: {Model}_{Acc}_{Organism}.pkl
@@ -295,15 +317,17 @@ def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_
             save_model=save_models
         )
         
-        # 2. PlantBERT
+        # 2. PlantBERT (or DNABERT, managed by ensemble_predictor)
         # Pass organism and output dir
+        print("[DEBUG] Invoking train_plantbert_from_mined_data...")
         plantbert_model, bert_tokenizer = train_plantbert_from_mined_data(
             mined_csv, 
             output_dir=models_dir, 
             organism=organism,
             task_type=task_type,
             save_model=save_models,
-            base_model_path=base_model_path
+            base_model_path=base_model_path,
+            kmer=kmer
         )
         
         return best_ml_model, vectorizer, plantbert_model, bert_tokenizer
@@ -488,17 +512,14 @@ Examples:
         
         # Let's rely on model path containing 'DNA_bert_{k}' which we set earlier.
         # Scripts logic will parse it or we can pass kmer as kwargs effectively?
-        # Actually ensemble_predictor.train_plantbert_from_mined_data accepts **kwargs or I should update it.
-        # Given I cannot easily change ensemble_predictor sig without updating all calls...
-        # Wait, I just edited ensemble_predictor.py in prev turn. I can edit it again to accept `kmer` arg.
-        
         ml_model, vect, bert_model, bert_tok = step3_train(
             args.mined_data, 
             args.task_type,
             organism=args.organism,
             models_dir=models_dir, 
             save_models=args.save_models,
-            base_model_path=args.model_path
+            base_model_path=args.model_path,
+            kmer=args.kmer
         )
         
         if ml_model is None or bert_model is None:

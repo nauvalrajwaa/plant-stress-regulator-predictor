@@ -5,7 +5,12 @@ import torch
 import random
 import joblib
 import datasets as ds
-import evaluate
+try:
+    import evaluate
+    EVALUATE_AVAILABLE = True
+except ImportError:
+    EVALUATE_AVAILABLE = False
+
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -389,7 +394,7 @@ def train_multimodel_ml(mined_data_path, output_dir="models", organism="Unknown"
     return best_overall_model, vectorizer
 
 
-def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True, base_model_path=None):
+def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True, base_model_path=None, kmer=6):
     """
     Trains PlantBERT using the mined data + random negatives.
     Replicates the logic from finetune_plantbert_expanded.py but callable.
@@ -482,11 +487,19 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
             train_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(train_tmp_path, index=False)
             test_df.rename(columns={'text': 'sequence', 'labels': 'label'}).to_csv(test_tmp_path, index=False)
             
-            # Extract K-mer from model name (e.g., DNA_bert_6 -> 6)
+            # Extract K-mer from model name or use argument
             import re
             kmer_match = re.search(r"dna_bert_(\d)", model_source_path.lower())
-            kmer_k = int(kmer_match.group(1)) if kmer_match else 6
-            print(f"      -> Detected K-mer from model name: {kmer_k}")
+            
+            # Logic: If argument kmer is valid (3-6), use it. Else try regex. Else default 6.
+            if kmer in [3, 4, 5, 6]:
+                kmer_k = kmer
+            elif kmer_match:
+                kmer_k = int(kmer_match.group(1))
+            else:
+                kmer_k = 6
+                
+            print(f"      -> Using K-mer: {kmer_k}")
 
             final_model, final_tokenizer = dnabert1_finetuner.run_dnabert1_finetuning(
                 train_csv_path=train_tmp_path,
@@ -561,7 +574,14 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     print(f"      -> Using max sequence length: {max_seq_len}")
 
     def tokenize_function(examples):
-        # Increased max_length to 512 for better context if model supports it
+        # Explicit verify tokenizer callable
+        if not callable(tokenizer):
+            # If tokenizer is broken/None, try a safe fallback just for tokenization
+            print("[CRITICAL WARNING] Tokenizer object provided is not callable. Regenerating...")
+            from transformers import AutoTokenizer
+            safe_tok = AutoTokenizer.from_pretrained("bert-base-uncased")
+            return safe_tok(examples["text"], padding="max_length", truncation=True, max_length=max_seq_len)
+            
         return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=max_seq_len)
         
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
@@ -694,12 +714,16 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
 
     
     # 3. Metrics
-    metric = evaluate.load("accuracy")
+    if EVALUATE_AVAILABLE:
+        metric = evaluate.load("accuracy")
+        
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
         predictions = np.argmax(logits, axis=-1)
-        return metric.compute(predictions=predictions, references=labels)
-
+        if EVALUATE_AVAILABLE:
+             return metric.compute(predictions=predictions, references=labels)
+        else:
+             return {"accuracy": accuracy_score(labels, predictions)}
 
     # 4. Trainer
     # Disable W&B logging explicitly

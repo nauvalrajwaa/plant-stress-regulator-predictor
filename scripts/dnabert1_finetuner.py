@@ -184,12 +184,29 @@ def run_dnabert1_finetuning(
     # Determine number of labels
     num_labels = len(set(train_labels))
     
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name_or_path,
-        num_labels=num_labels,
-        trust_remote_code=True,
-        hidden_dropout_prob=0.1
-    )
+    # FIX: Explicitly handle config loading for missing HF models
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name_or_path,
+            num_labels=num_labels,
+            trust_remote_code=True,
+            hidden_dropout_prob=0.1
+        )
+    except OSError:
+        # If zhihan1996/DNA_bert_6 fails (common issue), use specific config
+        print(f"[WARN] Could not load config directly from {model_name_or_path}.")
+        print("       --> Attempting to download manually or use fallback config.")
+        
+        # Fallback: Download manually if not present
+        if not os.path.exists(model_name_or_path) and "zhihan1996" in model_name_or_path:
+             os.system(f"git clone https://huggingface.co/{model_name_or_path} {model_name_or_path}")
+        
+        # Retry load
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name_or_path,
+            num_labels=num_labels,
+            trust_remote_code=True
+        )
 
     # 5. Training Arguments
     training_args = TrainingArguments(
