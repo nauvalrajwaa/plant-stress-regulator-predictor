@@ -8,6 +8,26 @@ import pandas as pd
 from Bio import Entrez
 from urllib.error import HTTPError  # FIX: Import library standar untuk handling error jaringan
 
+# =============================================================================
+# SYSTEM FIXES (Colab/Legacy Compatibility)
+# =============================================================================
+def fix_libtinfo():
+    """
+    Attempts to fix the missing libtinfo.so.5 error common in Colab/newer Linux
+    when running older binaries.
+    """
+    try:
+        if os.path.exists("/usr/lib/x86_64-linux-gnu/libtinfo.so.6"):
+            if not os.path.exists("/usr/lib/x86_64-linux-gnu/libtinfo.so.5"):
+                print("[System] Applying libtinfo.so.5 symlink fix...")
+                os.system("ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5")
+            if not os.path.exists("/usr/lib/x86_64-linux-gnu/libtinfo.so"):
+                 os.system("ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so")
+    except Exception as e:
+        print(f"[System] Warning: Could not apply libtinfo fix: {e}")
+
+fix_libtinfo()
+
 # Add script directory to path to import ensemble_predictor
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:

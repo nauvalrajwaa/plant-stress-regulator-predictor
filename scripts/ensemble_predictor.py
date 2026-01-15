@@ -139,7 +139,14 @@ def predict_stress_ensemble(mined_data_path):
                  )
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
-            logits = model(**inputs).logits
+            outputs = model(**inputs)
+            if hasattr(outputs, "logits"):
+                logits = outputs.logits
+            elif isinstance(outputs, tuple):
+                logits = outputs[0]
+            else:
+                logits = outputs
+
             probs = torch.nn.functional.softmax(logits, dim=-1)
             # Class 1 is 'Positive'
             bert_probs.extend(probs[:, 1].cpu().numpy())
@@ -960,19 +967,32 @@ def predict_with_new_models(target_csv, svm_model=None, vectorizer=None, bert_mo
         print(f"         [INFO] Using device: {device}")
         bert_model.to(device)
         bert_model.eval()
-        f callable(bert_tokenizer):
-                    inputs = bert_tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128)
-                else:
-                    inputs = bert_tokenizer.batch_encode_plus(
-                        batch, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
-                    
+        
         batch_size = 32
         with torch.no_grad():
             for i in range(0, len(seqs), batch_size):
                 batch = seqs[i:i+batch_size]
-                inputs = bert_tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                
+                if callable(bert_tokenizer):
+                    inputs = bert_tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                else:
+                    inputs = bert_tokenizer.batch_encode_plus(
+                         batch, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
+                    )
+                
                 inputs = {k: v.to(device) for k, v in inputs.items()}
-                logits = bert_model(**inputs).logits
+                
+                outputs = bert_model(**inputs)
+                # Compatibility: Legacy vs Modern Transformers
+                # Modern: outputs.logits
+                # Legacy: outputs[0] (tuple)
+                if hasattr(outputs, "logits"):
+                    logits = outputs.logits
+                elif isinstance(outputs, tuple):
+                    logits = outputs[0]
+                else:
+                    logits = outputs 
+                    
                 probs = torch.nn.functional.softmax(logits, dim=-1)
                 bert_probs.extend(probs[:, 1].cpu().numpy())
     else:
@@ -1036,19 +1056,29 @@ def evaluate_models_on_holdout(mined_data_path, svm_model, vectorizer, bert_mode
         labels = test_df['labels'].tolist()
         texts = test_df['text'].tolist()
         
-        # Batch if callable(bert_tokenizer):
-                    inputs = bert_tokenizer(batch_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
-                else:
-                    inputs = bert_tokenizer.batch_encode_plus(
-                        batch_text, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
-                    
+        # Batch inference
         batch_size = 32
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 batch_text = texts[i:i+batch_size]
-                inputs = bert_tokenizer(batch_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                
+                if callable(bert_tokenizer):
+                    inputs = bert_tokenizer(batch_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                else:
+                    inputs = bert_tokenizer.batch_encode_plus(
+                        batch_text, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
+                    )
+                
                 inputs = {k: v.to(device) for k, v in inputs.items()}
-                logits = bert_model(**inputs).logits
+                
+                outputs = bert_model(**inputs)
+                if hasattr(outputs, "logits"):
+                    logits = outputs.logits
+                elif isinstance(outputs, tuple):
+                    logits = outputs[0]
+                else:
+                    logits = outputs
+
                 batch_preds = torch.argmax(logits, dim=-1).cpu().numpy()
                 preds.extend(batch_preds)
         

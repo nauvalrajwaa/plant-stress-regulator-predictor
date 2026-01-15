@@ -235,6 +235,11 @@ def run_dnabert1_finetuning(
     total_steps = (len(train_dataset) // batch_size) * epochs
     warmup_steps = int(total_steps * 0.1)
     
+    # Debug: Check Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[DNABERT-1] Using device: {device}")
+    model.to(device)
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         overwrite_output_dir=True,
@@ -248,7 +253,7 @@ def run_dnabert1_finetuning(
         evaluate_during_training=True, # Replaces eval_strategy
         logging_steps=10,
         save_steps=100, # Replaces save_strategy="epoch" (approx)
-        # Unsupported in v2.11: load_best_model_at_end, metric_for_best_model, report_to
+        # Unsupported in v2.11: load_best_model_at_end, metric_for_best_model, report_to, dataloader_num_workers
     )
 
     # 6. Trainer
@@ -259,6 +264,15 @@ def run_dnabert1_finetuning(
         eval_dataset=val_dataset,
         compute_metrics=compute_metrics
     )
+    
+    # PATCH: Manually set num_workers on the DataLoaders if possible, or accept default
+    # In older transformers, this might be hardcoded in Trainer.get_train_dataloader
+    # We will try to rely on default behavior but print device info clearly.
+    
+    # 6.5. RESIZE EMBEDDINGS (Critical for DNA_bert which likely has specialized vocab)
+    # The error "IndexError: index out of range in self" usually means 
+    # the input IDs > vocab size. 
+    model.resize_token_embeddings(len(tokenizer))
 
     print("[DNABERT-1] Training...")
     trainer.train()
