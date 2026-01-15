@@ -285,27 +285,44 @@ def prepare_augmented_data(mined_data_path, task_type="binary"):
             print(f"      -> Encoded labels mapping: {dict(zip(le.classes_, le.transform(le.classes_)))}")
 
     else:
-        # Binary Mode: Generate Negatives
-        positive_seqs = df_mined['Extracted_Sequence'].tolist()
-        positive_labels = [1] * len(positive_seqs)
-        
-        # Generate Random Data (Negatives)
-        avg_len = int(sum(len(s) for s in positive_seqs) / len(positive_seqs))
-        
-        negative_seqs = []
-        bases = ['A', 'C', 'G', 'T']
-        for _ in range(len(positive_seqs)):
-            length = random.randint(int(avg_len*0.8), int(avg_len*1.2))
-            seq = "".join(random.choices(bases, k=length))
-            negative_seqs.append(seq)
-        
-        negative_labels = [0] * len(negative_seqs)
-        
-        # Combine
-        all_seqs = positive_seqs + negative_seqs
-        all_labels = positive_labels + negative_labels
-        
-        df_full = pd.DataFrame({'text': all_seqs, 'labels': all_labels})
+        # Binary Mode: Check if Negatives (Label 0) already exist (from Genomic Background Mining)
+        if 0 in df_mined['Label' if 'Label' in df_mined.columns else 'labels'].unique():
+             print("      -> [INFO] Found pre-mined Negative samples (Label 0). Skipping random generation.")
+             
+             # Standardize columns
+             if 'Label' in df_mined.columns:
+                 df_full = df_mined.rename(columns={'Extracted_Sequence': 'text', 'Label': 'labels'})
+             else:
+                 df_full = df_mined.rename(columns={'Extracted_Sequence': 'text'})
+             
+             # Basic balancing check
+             pos_count = len(df_full[df_full['labels'] == 1])
+             neg_count = len(df_full[df_full['labels'] == 0])
+             print(f"      -> Balance: {pos_count} Positives vs {neg_count} Negatives")
+             
+        else:
+            # Fallback: Generate Random Negatives
+            print("      -> [INFO] No negatives found. Generating Random Synthetic Negatives...")
+            positive_seqs = df_mined['Extracted_Sequence'].tolist()
+            positive_labels = [1] * len(positive_seqs)
+            
+            # Generate Random Data (Negatives)
+            avg_len = int(sum(len(s) for s in positive_seqs) / len(positive_seqs))
+            
+            negative_seqs = []
+            bases = ['A', 'C', 'G', 'T']
+            for _ in range(len(positive_seqs)):
+                length = random.randint(int(avg_len*0.8), int(avg_len*1.2))
+                seq = "".join(random.choices(bases, k=length))
+                negative_seqs.append(seq)
+            
+            negative_labels = [0] * len(negative_seqs)
+            
+            # Combine
+            all_seqs = positive_seqs + negative_seqs
+            all_labels = positive_labels + negative_labels
+            
+            df_full = pd.DataFrame({'text': all_seqs, 'labels': all_labels})
     
     # 4. Split
     train_df, test_df = train_test_split(df_full, test_size=0.2, random_state=42, stratify=df_full['labels'])

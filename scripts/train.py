@@ -4,6 +4,7 @@ import sys
 import os
 import re
 import time
+import random # Imported for negative mining
 import pandas as pd
 from Bio import Entrez
 from urllib.error import HTTPError  # FIX: Import library standar untuk handling error jaringan
@@ -154,7 +155,7 @@ def step1_search_ncbi(email, keywords, organism, output_file="list_gen_stres.txt
 # =============================================================================
 # STEP 2: MINING & MOTIF SCANNING
 # =============================================================================
-def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, output_csv="Dataset_Mined.csv", limit_genes=100, organism="Arabidopsis thaliana", max_seq_len=20000, flank_bp=50):
+def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, output_csv="Dataset_Mined.csv", limit_genes=100, organism="Arabidopsis thaliana", max_seq_len=20000, flank_bp=50, target_motifs=None):
     """
     Downloads sequences and scans for motifs. Supports both Gene Names and Accession IDs.
     """
@@ -163,7 +164,12 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
     Entrez.email = email
     
     # Config
-    motif_filter_keywords = ["ABRE", "DRE", "G-BOX", "MYB", "WRKY", "NAC"]
+    if target_motifs:
+        motif_filter_keywords = target_motifs
+        print(f"Custom Motif Filter: {motif_filter_keywords}")
+    else:
+        motif_filter_keywords = ["ABRE", "DRE", "G-BOX", "MYB", "WRKY", "NAC"]
+        print(f"Default Motif Filter: {motif_filter_keywords}")
     
     # Load PLACE Motifs
     iu_map = {
@@ -267,11 +273,21 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
         if seq:
             print(f"OK ({len(seq)}bp). Scan...", end=" ")
             hits = 0
+            # Track where motifs are found to avoid them for Negatives
+            occupied_mask = [False] * len(seq)
+            
+            # 1. Scan Positives
             for m in motif_library:
                 for match in m['regex'].finditer(seq):
                     start, end = match.start(), match.end()
+                    
+                    # Mark region as occupied (including potential flank overlap)
+                    p_start = max(0, start - flank_bp)
+                    p_end = min(len(seq), end + flank_bp)
+                    for k in range(p_start, p_end):
+                        occupied_mask[k] = True
+
                     if start >= flank_bp and (end + flank_bp) <= len(seq):
-                        
                         # Apply Multiclass Logic
                         label = 1
                         if task_type == 'multiclass':
@@ -285,7 +301,45 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
                             'Label': label
                         })
                         hits += 1
-            print(f"Found {hits}.")
+            
+            # 2. Mine Negatives (Genomic Background)
+            # Only if we found positives, try to find an equal number of negatives from THIS gene
+            if hits > 0 and task_type == 'binary':
+                neg_hits = 0
+                attempts = 0
+                target_len = flank_bp * 2  # Approximate length of positive windows
+                
+                # Try to find gaps until we match the number of hits or run out of tries
+                while neg_hits < hits and attempts < (hits * 20):
+                    attempts += 1
+                    # Random start position
+                    rand_start = random.randint(0, len(seq) - target_len)
+                    rand_end = rand_start + target_len
+                    
+                    # Check if this region overlaps with any motif
+                    is_clean = True
+                    for k in range(rand_start, rand_end):
+                        if occupied_mask[k]:
+                            is_clean = False
+                            break
+                    
+                    if is_clean:
+                        results.append({
+                            'Gene_Locus': gid,
+                            'Motif_ID': 'BACKGROUND_NEG',
+                            'Motif_Pattern': 'None',
+                            'Extracted_Sequence': seq[rand_start : rand_end],
+                            'Label': 0
+                        })
+                        neg_hits += 1
+                        # Mark this new negative zone as occupied too
+                        for k in range(rand_start, rand_end):
+                            occupied_mask[k] = True
+                            
+                print(f"Found {hits} Motifs + {neg_hits} Background Negs.")
+            else:
+                 print(f"Found {hits} Motifs.")
+
         else:
             print(f"SKIP -> {status}")
         
@@ -408,6 +462,12 @@ Examples:
     parser.add_argument("--kmer", type=int, default=6, choices=[3, 4, 5, 6],
                         help="K-mer size for DNABERT-1 (3, 4, 5, or 6). Default: 6")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs. Default: 3")
+    
+    # New Flexible Filters
+    parser.add_argument("--keywords", type=str, default=None, 
+                        help="Comma-separated list of stress keywords (e.g., 'drought,heat'). Default: standard stress list.")
+    parser.add_argument("--motifs", type=str, default=None,
+                        help="Comma-separated list of motif patterns to scan (e.g., 'ABRE,MYB'). Default: standard motif list.")
 
     args = parser.parse_args()
 
@@ -509,10 +569,17 @@ Examples:
     print(f"-------------------------")
     
     # Define Keywords for Search
-    stress_keywords = [
-        "drought", "salt stress", "cold stress", "heat shock", 
-        "abscisic acid", "water deprivation", "oxidative stress", "salinity"
-    ]
+    if args.keywords:
+        stress_keywords = [k.strip() for k in args.keywords.split(',')]
+        print(f"[CONFIG] Using Custom Stress Keywords: {stress_keywords}")
+    else:
+        stress_keywords = [
+            "drought", "salt stress", "cold stress", "heat shock", 
+            "abscisic acid", "water deprivation", "oxidative stress", "salinity"
+        ]
+
+    # Parse Motifs
+    target_motifs = [m.strip() for m in args.motifs.split(',')] if args.motifs else None
 
     # Execute Flow
     if args.step in ["all", "search"]:
@@ -520,7 +587,11 @@ Examples:
         
     if args.step in ["all", "mine"]:
         limit = args.limit_genes if args.limit_genes > 0 else None
-        step2_mine_sequences(args.email, args.gene_list, args.task_type, args.place_csv, args.mined_data, limit, args.organism, args.max_seq_len, args.flank_bp)
+        step2_mine_sequences(
+            args.email, args.gene_list, args.task_type, args.place_csv, 
+            args.mined_data, limit, args.organism, args.max_seq_len, args.flank_bp,
+            target_motifs=target_motifs
+        )
         
     if args.step in ["all", "train"]:
         # Update call to accept new arguments (organism, models_dir, save_models)

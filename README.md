@@ -89,6 +89,8 @@ Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBE
 | `--model-path` | Path to a specific base model (local or HF) if not using presets. | `None` |
 | **Data Mining** | | |
 | `--organism` | Target scientific name (e.g., "Oryza sativa", "Zea mays"). | "Arabidopsis thaliana" |
+| `--keywords` | **[New]** Custom search terms (comma-separated). e.g., "drought,heat". | Standard stress list |
+| `--motifs` | **[New]** Custom motif patterns to scan (comma-separated). e.g., "ABRE,MYB". | Standard PLACE list |
 | `--limit-genes` | Max number of genes to fetch from NCBI. Set `0` for no limit. | `100` |
 | `--task-type` | `binary` (Stress vs Random) or `multiclass` (Stress Type). | `binary` |
 | `--max-seq-len` | Maximum length of sequences to download to avoid memory issues. | `20000` |
@@ -146,6 +148,17 @@ python scripts/train.py \
     --step mine \
     --organism "Triticum aestivum" \
     --limit-genes 1000
+```
+
+**5. Custom Traits & Flexible Motifs:**
+*Search only for "Heat" related genes and mine only "ABRE" motifs.*
+```bash
+python scripts/train.py \
+    --step all \
+    --organism "Solanum lycopersicum" \
+    --keywords "heat shock,thermal stress" \
+    --motifs "ABRE,HSE" \
+    --llm-model dnabert2
 ```
 
 ---
