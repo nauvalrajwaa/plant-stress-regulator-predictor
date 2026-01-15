@@ -8,6 +8,7 @@ A comprehensive toolkit for predicting, analyzing, and training models for stres
     *   `--rg`: Small region analysis (1-2kb)
     *   `--pr`: Promoter scanning (up to 10kb) with adaptive slicing.
 *   **End-to-End Training**: Automated pipeline to **Search** genes, **Mine** sequences, **Check** validity, and **Train** ensemble models.
+*   **Biological Validity**: Uses **Genomic Background Mining** to extract true negative samples (non-stress regions from the same gene) instead of generating random synthetic noise.
 *   **Visual Analytics**: 
     *   Probability Heatmaps (Green = Stress, Red = Non-Stress).
     *   Sequence Logo generation for motif analysis.
@@ -99,6 +100,11 @@ Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBE
 | `--gene-list` | Path to a custom .txt file of gene names/accessions. | Auto-generated |
 | `--mined-data` | Path to a custom .csv file for training. | Auto-generated |
 | `--place-csv` | Path to PLACE database CSV. | Auto-detected |
+
+### 🧬 Dataset Composition Note (New)
+The pipeline now creates **Scientifically Robust Datasets**:
+1.  **Positive Samples (Label 1)**: Extracted from regions containing known stress motifs (e.g., ABRE, DRE).
+2.  **Negative Samples (Label 0)**: Mined from **Genomic Background** (non-motif regions) of the *same genes*. This forces the model to learn the specific stress signature rather than just distinguishing "real DNA" from "random noise".
 
 ### 🧬 Available Models
 
