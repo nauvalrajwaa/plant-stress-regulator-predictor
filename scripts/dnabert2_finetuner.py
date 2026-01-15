@@ -16,6 +16,10 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Dict, Sequence, Tuple, List, Union
 from torch.utils.data import Dataset
 from transformers import BertConfig, Trainer, TrainingArguments, AutoTokenizer, AutoModelForSequenceClassification
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:
+    snapshot_download = None
 
 # Attempt to import PEFT
 try:
@@ -53,6 +57,13 @@ def fix_dnabert2_layers(local_model_path):
             else:
                 f.write(line)
     
+    # Also patch flash_attn_triton.py if it exists to be safe
+    flash_attn_path = os.path.join(local_model_path, "flash_attn_triton.py")
+    if os.path.exists(flash_attn_path):
+         with open(flash_attn_path, "w") as f:
+             f.write("def flash_attn_func(*args, **kwargs): return None\n")
+             f.write("def flash_attn_qkvpacked_func(*args, **kwargs): return None\n")
+
     # Clear HF Cache if possible (optional, but good practice)
     cache_dir = os.path.expanduser("~/.cache/huggingface/modules/transformers_modules")
     if os.path.exists(cache_dir):
@@ -123,11 +134,17 @@ class SupervisedDataset(Dataset):
             texts = load_or_generate_kmer(data_path, texts, kmer)
 
         # Tokenize
+        # Fix for OverflowError with huge model_max_length
+        safe_max_len = tokenizer.model_max_length
+        if safe_max_len > 10000:
+            print(f"[WARN] Tokenizer max_length {safe_max_len} is too large. Capping to 512.")
+            safe_max_len = 512
+            
         output = tokenizer(
             texts,
             return_tensors="pt",
             padding="longest",
-            max_length=tokenizer.model_max_length,
+            max_length=safe_max_len,
             truncation=True,
         )
 
@@ -211,11 +228,64 @@ def run_dnabert2_finetuning(
     Compatible with integration into other scripts.
     """
     print(f"\n[DNABERT-2] Starting Finetuning Pipeline...")
-    print(f"Model: {model_name_or_path}")
+    
+    # --- AUTO-FIX: Download to local, Reset, and Patch (Notebook Strategy) ---
+    if model_name_or_path == "zhihan1996/DNABERT-2-117M" and snapshot_download is not None:
+        local_model_path = os.path.abspath("dnabert2_local_fixed")
+        print(f"[DNABERT-2] Strategy: Download fresh to {local_model_path} and patch.")
+        
+        # 1. Reset
+        if os.path.exists(local_model_path):
+             print("       -> Cleaning previous local cache...")
+             shutil.rmtree(local_model_path)
+        
+        # 2. Download
+        print("       -> Downloading model from HuggingFace...")
+        try:
+            snapshot_download(
+                repo_id="zhihan1996/DNABERT-2-117M",
+                local_dir=local_model_path,
+                local_dir_use_symlinks=False
+            )
+            
+            # 3. Apply Safe Patch to bert_layers.py
+            bert_layers_path = os.path.join(local_model_path, "bert_layers.py")
+            if os.path.exists(bert_layers_path):
+                print(f"       -> Patching {bert_layers_path}...")
+                with open(bert_layers_path, "r") as f:
+                    lines = f.readlines()
+                
+                with open(bert_layers_path, "w") as f:
+                    for line in lines:
+                        if "from .flash_attn_triton import" in line:
+                            # Maintain indentation
+                            indent = line[:len(line) - len(line.lstrip())]
+                            f.write(f"{indent}flash_attn_qkvpacked_func = None\n")
+                            f.write(f"{indent}flash_attn_func = None\n")
+                        else:
+                            f.write(line)
+            
+            # 4. Clear HF Cache to prevent stale module loading
+            hf_cache_dir = os.path.expanduser("~/.cache/huggingface/modules/transformers_modules")
+            if os.path.exists(hf_cache_dir):
+                 print("       -> Clearing internal HuggingFace modules cache...")
+                 try:
+                    shutil.rmtree(hf_cache_dir)
+                 except Exception:
+                    pass
+
+            # Update path to use the local fixed version
+            model_name_or_path = local_model_path
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to download/patch locally: {e}")
+            print("       -> Proceeding with default remote load (risk of Triton error).")
+
+    print(f"Model Path: {model_name_or_path}")
     print(f"Data: {train_csv_path}")
     print(f"Output: {output_dir}")
 
-    # 1. FIX LAYERS (Safe Patch)
+    # 1. FIX LAYERS (Legacy Check)
     if os.path.exists(model_name_or_path):
         fix_dnabert2_layers(model_name_or_path)
     
@@ -252,6 +322,17 @@ def run_dnabert2_finetuning(
         trust_remote_code=True,
         ignore_mismatched_sizes=True
     )
+
+    # 4.5 FORCE DISABLE FLASH ATTENTION IN MEMORY
+    # The disk patching sometimes isn't picked up if modules are already cached/loaded.
+    # We manually inspect and neuter the attention modules in memory.
+    print("[DNABERT-2] Manually disabling Flash Attention in loaded model...")
+    for name, module in model.named_modules():
+        if "self" in name and "attention" in name:
+             # Check for the flag commonly used in DNABERT-2 / BERT-ALiBi
+             if hasattr(module, "use_flash_attention"):
+                  print(f"       -> Disabling use_flash_attention in {name}")
+                  module.use_flash_attention = False
     
     # 5. LORA (Optional)
     if use_lora and PEFT_AVAILABLE:
