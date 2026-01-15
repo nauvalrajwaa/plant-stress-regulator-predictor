@@ -131,7 +131,12 @@ def predict_stress_ensemble(mined_data_path):
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
             # Max length for BERT allows for 512, but our sequences are short (~100bp)
-            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=150)
+            if callable(tokenizer):
+                inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=150)
+            else:
+                 inputs = tokenizer.batch_encode_plus(
+                    batch, max_length=150, pad_to_max_length=True, truncation=True, return_tensors='pt'
+                 )
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
             logits = model(**inputs).logits
@@ -574,12 +579,30 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
     print(f"      -> Using max sequence length: {max_seq_len}")
 
     def tokenize_function(examples):
-        # Explicit verify tokenizer callable
+        # Explicit verify tokenizer callable (Legacy Transformers v2.x support)
         if not callable(tokenizer):
-            # If tokenizer is broken/None, try a safe fallback just for tokenization
-            print("[CRITICAL WARNING] Tokenizer object provided is not callable. Regenerating...")
+            # Check for batch_encode_plus (standard in v2.x)
+            if hasattr(tokenizer, "batch_encode_plus"):
+                return tokenizer.batch_encode_plus(
+                    examples["text"], 
+                    max_length=max_seq_len, 
+                    pad_to_max_length=True,
+                    truncation=True
+                )
+            
+            # If tokenizer is broken/None, try a safe fallback
+            print("[CRITICAL WARNING] Tokenizer object provided is not callable/compatible. Regenerating...")
             from transformers import AutoTokenizer
             safe_tok = AutoTokenizer.from_pretrained("bert-base-uncased")
+            
+            # Fallback usage
+            if not callable(safe_tok) and hasattr(safe_tok, "batch_encode_plus"):
+                 return safe_tok.batch_encode_plus(
+                    examples["text"], 
+                    max_length=max_seq_len, 
+                    pad_to_max_length=True,
+                    truncation=True
+                 )
             return safe_tok(examples["text"], padding="max_length", truncation=True, max_length=max_seq_len)
             
         return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=max_seq_len)
@@ -654,14 +677,32 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
         else:
             # Standard BERT / PlantBERT
             from transformers import AutoConfig
-            config = AutoConfig.from_pretrained(model_source_path, trust_remote_code=True, num_labels=num_labels)
             
-            model = AutoModelForSequenceClassification.from_pretrained(
-                model_source_path, 
-                config=config,
-                ignore_mismatched_sizes=True,
-                trust_remote_code=True
-            )
+            # Robust Config Loading (Legacy vs Modern)
+            try:
+                config = AutoConfig.from_pretrained(model_source_path, num_labels=num_labels)
+            except Exception:
+                 # Try with trust_remote_code if supported (newer transformers)
+                 try:
+                    config = AutoConfig.from_pretrained(model_source_path, num_labels=num_labels, trust_remote_code=True)
+                 except TypeError:
+                    config = AutoConfig.from_pretrained(model_source_path, num_labels=num_labels)
+
+            # Robust Model Loading
+            try:
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    model_source_path, 
+                    config=config,
+                    ignore_mismatched_sizes=True,
+                    trust_remote_code=True
+                )
+            except (TypeError, ValueError):
+                # Retry for Legacy Transformers (v2.x - v4.x)
+                print("      -> [Compatibility] Retrying load without newer args (ignore_mismatched_sizes, etc)...")
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    model_source_path, 
+                    config=config
+                )
             
             # Critical Fix for "Size of tensor a (512) must match size of tensor b (128)"
             # Some older PlantBERT models have max_position_embeddings=128 but we tokenized to 512.
@@ -762,41 +803,104 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
         print(f"      -> [Config] DNABERT detected: Using BatchSize={batch_size}, GradAccum={grad_acc}, FP16={use_fp16}")
     else:
         # Standard PlantBERT (small)
-        # Check for MPS (Apple Silicon) to avoid "Process 14.66GB" type errors on shared memory if 16 is too high
-        is_mps = torch.backends.mps.is_available()
+        # Check for MPS (Apple Silicon) safely (PyTorch 1.7.1 compat)
+        try:
+             is_mps = torch.backends.mps.is_available()
+        except AttributeError:
+             is_mps = False
+             
         batch_size = 8 if is_mps else 16
         grad_acc = 2 if is_mps else 1
         use_fp16 = False # MPS doesn't fully stabilize with fp16 in Trainer sometimes
         use_grad_ckpt = False
         print(f"      -> [Config] Standard Model: Using BatchSize={batch_size}")
 
-    training_args = TrainingArguments(
-        output_dir=ckpt_dir,
-        overwrite_output_dir=True,
-        eval_strategy="epoch",  
-        save_strategy="epoch",
-        num_train_epochs=3,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        gradient_accumulation_steps=grad_acc,
-        fp16=use_fp16,
-        gradient_checkpointing=use_grad_ckpt,
-        learning_rate=2e-5,
-        weight_decay=0.01,
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        logging_steps=10,
-        report_to="none" 
-    )
+    # Prepare Training Arguments with version compatibility
+    import transformers
+    major_ver = int(transformers.__version__.split('.')[0])
     
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_datasets["train"],
-        eval_dataset=tokenized_datasets["test"],
-        compute_metrics=compute_metrics,
-        tokenizer=tokenizer,
-    )
+    if major_ver < 3: # Legacy (v2.x) - strict for DNABERT1 envs
+        # Manual calculation for per_gpu vs per_device
+        # v2.11 uses per_gpu_train_batch_size
+        training_args = TrainingArguments(
+            output_dir=ckpt_dir,
+            overwrite_output_dir=True,
+            evaluate_during_training=True, # v2.x legacy
+            num_train_epochs=3,
+            per_gpu_train_batch_size=batch_size,
+            per_gpu_eval_batch_size=batch_size,
+            gradient_accumulation_steps=grad_acc,
+            fp16=False, # Apex likely missing
+            learning_rate=2e-5,
+            weight_decay=0.01,
+            logging_steps=10,
+            save_steps=500,
+        )
+    else:
+        # Modern (v3.x - v4.x+)
+        # 'eval_strategy' is very new (v4.41+), 'evaluation_strategy' is standard v4.x
+        strategy_arg = "epoch"
+        kwargs = {
+            "output_dir": ckpt_dir,
+            "overwrite_output_dir": True,
+            "num_train_epochs": 3,
+            "per_device_train_batch_size": batch_size,
+            "per_device_eval_batch_size": batch_size,
+            "gradient_accumulation_steps": grad_acc,
+            "fp16": use_fp16, # keep user pref for modern envs
+            "gradient_checkpointing": use_grad_ckpt,
+            "learning_rate": 2e-5,
+            "weight_decay": 0.01,
+            "load_best_model_at_end": True,
+            "metric_for_best_model": "accuracy",
+            "logging_steps": 10,
+            "report_to": "none",
+            "save_strategy": "epoch"
+        }
+        
+        # Safe strategy arg
+        try:
+             # Try modern
+             TrainingArguments(output_dir="tmp", eval_strategy="epoch")
+             kwargs["eval_strategy"] = "epoch"
+        except TypeError:
+             # Fallback
+             kwargs["evaluation_strategy"] = "epoch"
+
+        training_args = TrainingArguments(**kwargs)
+    
+    # Define legacy collator for v2.x (which expects objs with .collate_batch)
+    class LegacyDictCollator:
+        def collate_batch(self, features):
+            import torch
+            batch = {}
+            first = features[0]
+            for k in first.keys():
+                if k == "label" or k == "labels":
+                     # Ensure labels are LongTensor key 'labels'
+                     batch["labels"] = torch.stack([f[k] for f in features])
+                else:
+                     batch[k] = torch.stack([f[k] for f in features])
+            return batch
+
+    # Trainer (Compatibility)
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": tokenized_datasets["train"],
+        "eval_dataset": tokenized_datasets["test"],
+        "compute_metrics": compute_metrics,
+        "data_collator": LegacyDictCollator(), 
+    }
+    
+    # Newer transformers support passing 'tokenizer' to Trainer for auto-saving
+    # Older ones (v2.x) do not have this argument in __init__
+    import inspect
+    init_sig = inspect.signature(Trainer.__init__)
+    if "tokenizer" in init_sig.parameters:
+        trainer_kwargs["tokenizer"] = tokenizer
+        
+    trainer = Trainer(**trainer_kwargs)
     
     print(f"      -> Starting Training (this may take a while)...")
     trainer.train()
@@ -856,7 +960,12 @@ def predict_with_new_models(target_csv, svm_model=None, vectorizer=None, bert_mo
         print(f"         [INFO] Using device: {device}")
         bert_model.to(device)
         bert_model.eval()
-        
+        f callable(bert_tokenizer):
+                    inputs = bert_tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                else:
+                    inputs = bert_tokenizer.batch_encode_plus(
+                        batch, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
+                    
         batch_size = 32
         with torch.no_grad():
             for i in range(0, len(seqs), batch_size):
@@ -927,7 +1036,12 @@ def evaluate_models_on_holdout(mined_data_path, svm_model, vectorizer, bert_mode
         labels = test_df['labels'].tolist()
         texts = test_df['text'].tolist()
         
-        # Batch inference
+        # Batch if callable(bert_tokenizer):
+                    inputs = bert_tokenizer(batch_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                else:
+                    inputs = bert_tokenizer.batch_encode_plus(
+                        batch_text, max_length=128, pad_to_max_length=True, truncation=True, return_tensors='pt'
+                    
         batch_size = 32
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):

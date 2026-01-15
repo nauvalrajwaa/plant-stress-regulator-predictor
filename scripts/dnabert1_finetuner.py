@@ -75,6 +75,16 @@ def load_and_process_data(data_path: str, k: int) -> Tuple[List[str], List[int]]
 # 2. DATASET CLASS
 # =============================================================================
 
+@dataclass
+class InputFeatures:
+    """
+    A single set of features of data.
+    Compatible with Transformers v2.11 DefaultDataCollator which uses vars(obj).
+    """
+    input_ids: List[int]
+    attention_mask: List[int]
+    labels: int
+    
 class DNABERT1Dataset(Dataset):
     def __init__(self, sequences: List[str], labels: List[int], tokenizer: transformers.PreTrainedTokenizer, max_len: int = 512):
         self.len = len(sequences)
@@ -88,20 +98,30 @@ class DNABERT1Dataset(Dataset):
         label = self.labels[index]
 
         # DNABERT-1 uses BERT tokenizer. Input is "ACG CGT ...".
-        # We assume tokenizer is configured correctly.
-        encoding = self.tokenizer(
-            seq,
-            return_tensors='pt',
-            max_length=self.max_len,
-            padding='max_length',
-            truncation=True
-        )
+        # Compatibility: Legacy Transformers 2.11 (Tokenizer not callable)
+        if callable(self.tokenizer):
+             encoding = self.tokenizer(
+                seq,
+                return_tensors='pt',
+                max_length=self.max_len,
+                padding='max_length',
+                truncation=True
+            )
+        else:
+             # Legacy Fallback using encode_plus / batch_encode_plus not always suitable here for single item
+             encoding = self.tokenizer.encode_plus(
+                seq,
+                max_length=self.max_len,
+                pad_to_max_length=True,
+                truncation=True,
+                return_tensors='pt'
+             )
 
-        return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': torch.tensor(label, dtype=torch.long)
-        }
+        return InputFeatures(
+            input_ids=encoding['input_ids'].flatten().tolist(),
+            attention_mask=encoding['attention_mask'].flatten().tolist(),
+            labels=label
+        )
 
     def __len__(self):
         return self.len
@@ -163,7 +183,8 @@ def run_dnabert1_finetuning(
     # DNABERT-1 uses standard BERT tokenizer
     print("[DNABERT-1] Loading Tokenizer...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+        # Compatibility: Removed trust_remote_code for legacy transformers
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     except Exception as e:
         print(f"[WARN] Failed to load tokenizer from {model_name_or_path}. Fallback to bert-base-uncased.")
         tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -185,12 +206,13 @@ def run_dnabert1_finetuning(
     num_labels = len(set(train_labels))
     
     # FIX: Explicitly handle config loading for missing HF models
+    # Also handle transformers 2.11 / older compatibility (avoid passing num_labels to from_pretrained kwargs)
+    from transformers import AutoConfig
     try:
+        config = AutoConfig.from_pretrained(model_name_or_path, num_labels=num_labels)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name_or_path,
-            num_labels=num_labels,
-            trust_remote_code=True,
-            hidden_dropout_prob=0.1
+            config=config
         )
     except OSError:
         # If zhihan1996/DNA_bert_6 fails (common issue), use specific config
@@ -201,30 +223,32 @@ def run_dnabert1_finetuning(
         if not os.path.exists(model_name_or_path) and "zhihan1996" in model_name_or_path:
              os.system(f"git clone https://huggingface.co/{model_name_or_path} {model_name_or_path}")
         
-        # Retry load
+        # Retry load with explicit config
+        config = AutoConfig.from_pretrained(model_name_or_path, num_labels=num_labels)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name_or_path,
-            num_labels=num_labels,
-            trust_remote_code=True
+            config=config
         )
 
-    # 5. Training Arguments
+    # 5. Training Arguments (Legacy Transformers 2.11 Compatible)
+    # Calculate warmup steps manually since warmup_ratio is not supported in v2.11
+    total_steps = (len(train_dataset) // batch_size) * epochs
+    warmup_steps = int(total_steps * 0.1)
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         overwrite_output_dir=True,
         num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        learning_rate=2e-4, # Higher LR for DNABERT-1 as per paper/notebook
+        per_gpu_train_batch_size=batch_size, # v2.11 uses per_gpu_...
+        per_gpu_eval_batch_size=batch_size,
+        learning_rate=2e-4, 
         weight_decay=0.01,
-        warmup_ratio=0.1,   # Match notebook warmup_percent 0.1
-        fp16=torch.cuda.is_available(),
-        eval_strategy="epoch",  
-        save_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
+        warmup_steps=warmup_steps, # Replaces warmup_ratio
+        fp16=False, # Apex not installed in user env, disable fp16
+        evaluate_during_training=True, # Replaces eval_strategy
         logging_steps=10,
-        report_to="none"
+        save_steps=100, # Replaces save_strategy="epoch" (approx)
+        # Unsupported in v2.11: load_best_model_at_end, metric_for_best_model, report_to
     )
 
     # 6. Trainer
