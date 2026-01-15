@@ -406,7 +406,7 @@ def train_multimodel_ml(mined_data_path, output_dir="models", organism="Unknown"
     return best_overall_model, vectorizer
 
 
-def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True, base_model_path=None, kmer=6):
+def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organism="Unknown", task_type="binary", save_model=True, base_model_path=None, kmer=6, epochs=3):
     """
     Trains PlantBERT using the mined data + random negatives.
     Replicates the logic from finetune_plantbert_expanded.py but callable.
@@ -460,7 +460,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                 val_csv_path=test_tmp_path,
                 output_dir=models_dir_abs,
                 model_name_or_path=model_source_path,
-                epochs=3,
+                epochs=epochs,
                 batch_size=8, # Adjusted as per notebook
                 save_model=save_model,
                 use_lora=use_lora
@@ -518,7 +518,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
                 val_csv_path=test_tmp_path,
                 output_dir=models_dir_abs,
                 kmer=kmer_k,
-                epochs=3,
+                epochs=epochs,
                 batch_size=16, # DNABERT-1 is lighter than V2
                 save_model=save_model,
                 model_name_or_path=model_source_path
@@ -833,7 +833,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
             output_dir=ckpt_dir,
             overwrite_output_dir=True,
             evaluate_during_training=True, # v2.x legacy
-            num_train_epochs=3,
+            num_train_epochs=epochs,
             per_gpu_train_batch_size=batch_size,
             per_gpu_eval_batch_size=batch_size,
             gradient_accumulation_steps=grad_acc,
@@ -850,7 +850,7 @@ def train_plantbert_from_mined_data(mined_data_path, output_dir="models", organi
         kwargs = {
             "output_dir": ckpt_dir,
             "overwrite_output_dir": True,
-            "num_train_epochs": 3,
+            "num_train_epochs": epochs,
             "per_device_train_batch_size": batch_size,
             "per_device_eval_batch_size": batch_size,
             "gradient_accumulation_steps": grad_acc,

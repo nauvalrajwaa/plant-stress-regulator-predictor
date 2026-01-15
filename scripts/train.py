@@ -303,7 +303,7 @@ def step2_mine_sequences(email, gene_list_path, task_type, place_csv_path, outpu
 # =============================================================================
 # STEP 3: TRAINING
 # =============================================================================
-def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_models=True, base_model_path=None, kmer=6):
+def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_models=True, base_model_path=None, kmer=6, epochs=3):
     print(f"\n--- STEP 3: TRAINING MODELS ({task_type}) ---")
     
     # LAZY IMPORT CHECK - Fail Fast here if libraries are missing
@@ -347,7 +347,8 @@ def step3_train(mined_csv, task_type, organism="Unknown", models_dir=None, save_
             task_type=task_type,
             save_model=save_models,
             base_model_path=base_model_path,
-            kmer=kmer
+            kmer=kmer,
+            epochs=epochs
         )
         
         return best_ml_model, vectorizer, plantbert_model, bert_tokenizer
@@ -406,6 +407,7 @@ Examples:
                         help="Select LLM preset: 'plantbert', 'dnabert2', 'dnabert1', or 'agront'")
     parser.add_argument("--kmer", type=int, default=6, choices=[3, 4, 5, 6],
                         help="K-mer size for DNABERT-1 (3, 4, 5, or 6). Default: 6")
+    parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs. Default: 3")
 
     args = parser.parse_args()
 
@@ -539,7 +541,8 @@ Examples:
             models_dir=models_dir, 
             save_models=args.save_models,
             base_model_path=args.model_path,
-            kmer=args.kmer
+            kmer=args.kmer,
+            epochs=args.epochs
         )
         
         if ml_model is None or bert_model is None:

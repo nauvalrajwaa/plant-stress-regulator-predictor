@@ -83,6 +83,7 @@ Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBE
 | `--email` | **[Required]** Email address (for NCBI Entrez usage). | `user@example.com` |
 | **Model Configuration** | | |
 | `--llm-model` | **[New]** Choose Foundation Model: `plantbert`, `dnabert2`, `dnabert1`, or `agront`. | `plantbert` |
+| `--epochs` | **[New]** Number of training epochs. | `3` |
 | `--kmer` | **[New]** K-mer size for **DNABERT-1** (3, 4, 5, or 6). | `6` |
 | `--save-models` | Save valid model checkpoints to `runs/`. Use `--no-save-models` to disable. | `True` |
 | `--model-path` | Path to a specific base model (local or HF) if not using presets. | `None` |
@@ -96,6 +97,15 @@ Use `scripts/train.py` to build datasets from NCBI and fine-tune models (PlantBE
 | `--gene-list` | Path to a custom .txt file of gene names/accessions. | Auto-generated |
 | `--mined-data` | Path to a custom .csv file for training. | Auto-generated |
 | `--place-csv` | Path to PLACE database CSV. | Auto-detected |
+
+### 🧬 Available Models
+
+| Model | Size (Params) | Architecture | Best For |
+| :--- | :--- | :--- | :--- |
+| **PlantBERT** | ~110M | BERT-Base | General purpose, short sequences (<512bp). |
+| **DNABERT-2** | ~117M | ALiBi Attention | Long sequences, high efficiency, modern standard. |
+| **DNABERT-1** | ~110M | K-mer BERT | Legacy research replication. Requires fixed K-mer. |
+| **Agro-NT** | ~1 Billion | Transformer-XL | Large-scale genomic patterns. **High GPU Requirement**. |
 
 ### Example Commands
 
