@@ -5,13 +5,13 @@ A comprehensive toolkit for predicting, analyzing, and training models for stres
 ## 🌟 Features
 
 *   **Dual Mode Inference**: 
-    *   `--rg`: Small region analysis (1-2kb)
-    *   `--pr`: Promoter scanning (up to 10kb) with adaptive slicing.
+    *   `--rg` (**Region Mode**): Rapid classification of short DNA chunks (ideal for <2kb).
+    *   `--pr` (**Promoter Mode**): **Smart Overlap Scanning** for long sequences (up to 10kb+). Uses overlapping slices (automatically overlaps by 200bp) to eliminate "boundary blindness" and ensure motifs split between slices are detected.
+*   **Enhanced Visualization & Reporting**:
+    *   Generates interactive **HTML Reports** with detailed legends and embedded plots.
+    *   **High-Quality Plots**: PNG visualizations with smoothed trend lines, explicit Y-axis probability values, and clear stress/non-stress indicators.
 *   **End-to-End Training**: Automated pipeline to **Search** genes, **Mine** sequences, **Check** validity, and **Train** ensemble models.
 *   **Biological Validity**: Uses **Genomic Background Mining** to extract true negative samples (non-stress regions from the same gene) instead of generating random synthetic noise.
-*   **Visual Analytics**: 
-    *   Probability Heatmaps (Green = Stress, Red = Non-Stress).
-    *   Sequence Logo generation for motif analysis.
 *   **Dynamic Configuration**: Flexible support for different organisms (*Arabidopsis*, *Rice*, etc.) and gene limits.
 
 ---
@@ -40,14 +40,14 @@ Use `stress_predictor/main.py` to predict stress regions on your FASTA files.
 | Flag | Required | Description | Default |
 | :--- | :---: | :--- | :--- |
 | `--input` | ✅ | Path to the input FASTA file containing sequences. | - |
-| `--pr` | *One of* | **Promoter Mode**: Scans long sequences (e.g., 2kb-10kb) using a sliding window. | - |
-| `--rg` | *One of* | **Region Mode**: Classifies short DNA chunks (e.g., 200bp) directly. | - |
-| `--model-path` | ❌ | Path to a local model folder (e.g., `runs/run_ID/models/...`). **Overrides --model**. | `None` |
-| `--model` | ❌ | Hugging Face Hub model ID (if not using local path). | `None` |
-| `--tokenizer` | ❌ | Hugging Face Hub tokenizer ID (usually same as model). | `None` |
-| `--output` | ❌ | Custom folder to save results. | `runs/run_{date}_{mode}` |
+| --pr | *One of* | **Promoter Mode**: Scans long sequences with **Smart Overlap**. Splits sequence into chunks of `--slice` size with 200bp overlap. | - |
+| --rg | *One of* | **Region Mode**: Classifies short DNA chunks (e.g., 200bp) directly. | - |
+| --model-path | ❌ | Path to a local model folder (e.g., `runs/run_ID/models/...`). **Overrides --model**. | `None` |
+| --model | ❌ | Hugging Face Hub model ID (if not using local path). | `None` |
+| --tokenizer | ❌ | Hugging Face Hub tokenizer ID (usually same as model). | `None` |
+| --output | ❌ | Custom folder to save results. | `runs/run_{date}_{mode}` |
 | `--slice` | ❌ | Window size (base pairs) for promoter scanning (`--pr` only). | `1000` |
-| `--stride` | ❌ | Step size for sliding window (`--pr` only). | `200` |
+| `--stride` | ❌ | Step size for *internal* sliding window within each slice (--pr only). | `200` |
 | `--window` | ❌ | Context window size for inference. Default is **Auto-Detect** (Optimal based on Model). | `Auto` |
 | `--force-cpu` | ❌ | Force CPU execution even if GPU (CUDA/MPS) is available. | `False` |
 
@@ -202,7 +202,8 @@ stress-predictor/
 │   └── ensemble_predictor.py # 🤖 Model Definitions
 ├── stress_predictor/
 │   ├── main.py               # 🔮 Inference Entry Point
-│   └── model_utils.py        # ⚙️ Inference Logic
+│   ├── model_utils.py        # ⚙️ Inference Logic
+│   └── html_report.py        # 📊 Report Generation Logic
 └── software_test/            # 🧪 Test FASTA files
 ```
 
