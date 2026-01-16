@@ -9,6 +9,21 @@ import pandas as pd
 from Bio import Entrez
 from urllib.error import HTTPError  # FIX: Import library standar untuk handling error jaringan
 
+class DualLogger:
+    """Redirects stdout to both terminal and a file."""
+    def __init__(self, filepath):
+        self.terminal = sys.stdout
+        self.log = open(filepath, "w", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
 # =============================================================================
 # SYSTEM FIXES (Colab/Legacy Compatibility)
 # =============================================================================
@@ -498,6 +513,10 @@ Examples:
     current_run_dir = os.path.join(runs_dir, run_id)
     os.makedirs(current_run_dir, exist_ok=True)
     
+    # Setup logging to file
+    log_file = os.path.join(current_run_dir, "training_pipeline_log.txt")
+    sys.stdout = DualLogger(log_file)
+    
     # Define Models Directory (Global or Run Specific?)
     # User requested separate runs folder logic.
     # We will save models INSIDE this run folder to keep everything together.
@@ -559,14 +578,18 @@ Examples:
     if args.mined_data is None:
         args.mined_data = os.path.join(datasets_dir, f"dataset_{file_id}.csv")
         
-    print(f"--- RUN CONFIGURATION ---")
-    print(f"Run ID: {run_id}")
-    print(f"Run Directory: {current_run_dir}")
-    print(f"Gene List: {args.gene_list}")
-    print(f"Mined Sequence Data: {args.mined_data}")
-    print(f"Models Directory: {models_dir if args.save_models else 'Not saving'}")
-    print(f"Base Model Path: {args.model_path}")
-    print(f"-------------------------")
+    print(f"\n" + "="*60)
+    print(f"🌱 TRAINING PIPELINER | {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"="*60)
+    print(f"Run ID           : {run_id}")
+    print(f"Run Directory    : {current_run_dir}")
+    print(f"Log File         : {log_file}")
+    print(f"-"*60)
+    print(f"Gene List        : {args.gene_list}")
+    print(f"Mined Data       : {args.mined_data}")
+    print(f"Models Directory : {models_dir if args.save_models else 'Not saving'}")
+    print(f"Base Model Path  : {args.model_path}")
+    print(f"="*60 + "\n")
     
     # Define Keywords for Search
     if args.keywords:

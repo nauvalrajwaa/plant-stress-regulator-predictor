@@ -35,6 +35,9 @@ def prepare_tokenizer(tokenizer_name_or_path: str, is_dnabert: bool, is_local=Fa
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         elif tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
+        else:
+            # Fallback for models like PlantBERT/BERT that might miss pad_token config
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
     if 'token_type_ids' in tokenizer.model_input_names:
         tokenizer.model_input_names = [n for n in tokenizer.model_input_names if n != 'token_type_ids']
@@ -81,8 +84,9 @@ def load_model(model_name: str, tokenizer_name: str, device, model_path: str = N
             config = AutoConfig.from_pretrained(f"igemugm/{model_name}-stress-predictor", trust_remote_code=True)
 
     tokenizer = prepare_tokenizer(target_path, is_dnabert, is_local=is_local)
-    config.pad_token_id = tokenizer.pad_token_id
+    # config.pad_token_id = tokenizer.pad_token_id # Moved after model loading
     model = prepare_model(target_path, config, tokenizer, is_local=is_local)
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     return tokenizer, model
 
@@ -181,7 +185,7 @@ def region_stress_classification(
     except Exception as e:
         raise RuntimeError(f"Failed to load model: {str(e)}")
 
-    # 1. Adaptive Slicing: Check model max length
+    # 1. Smart Window Adaptation
     try:
         max_model_len = model.config.max_position_embeddings
     except AttributeError:
@@ -189,11 +193,34 @@ def region_stress_classification(
         
     print(f"Model max length: {max_model_len}")
     
-    # If standard BERT (128) vs Configured Window (200), we must adapt.
-    # Use 100bp window if model < 200.
-    if max_model_len < window_size:
-        print(f"Adapting window size from {window_size} to {max_model_len-2} to fit model.")
+    # Logic:
+    # 1. If window_size is None (Auto mode), pick optimal based on model.
+    # 2. If window_size is provided but too large, cap it.
+    
+    if window_size is None:
+        # Default Auto Logic
+        # For huge models (e.g. 32k), we don't want 32k windows (too heavy, dilutes signal).
+        # We cap at 512 for stability, or use max_len-2 if smaller.
+        window_size = min(512, max_model_len - 2)
+        # print(f"   [Auto-Adjust] Set window size to {window_size} bp based on model architecture.")
+        
+        # Auto-adjust stride too if not set (assumed passed as default 100/200 usually)
+        # Optimal stride is usually 50% overlap
+        stride = window_size // 2
+        # print(f"   [Auto-Adjust] Set stride to {stride} bp.")
+
+    elif max_model_len < window_size:
+        print(f"   [Conflict] Requested window {window_size} > Model Max {max_model_len}.")
         window_size = max_model_len - 2 # -2 for [CLS] and [SEP]
+        print(f"   [Adapting] Reduced window size to {window_size} bp.")
+        # Adjust stride to keep ratio if needed
+        if stride >= window_size:
+            stride = window_size // 2
+            print(f"   [Adapting] Reduced stride to {stride} bp.")
+
+    # Validation
+    if window_size < 10:
+        raise ValueError(f"Resulting window size {window_size} is too small!")
         stride = window_size // 2 # 50% overlap
         print(f"New Window: {window_size}, New Stride: {stride}")
 
@@ -281,7 +308,7 @@ def region_stress_classification(
     
     plt.figure(figsize=(15, 3))
     
-    # Scatter plot with color mapping
+    # Scatter plot with color mapping (back to top position y=1)
     sc = plt.scatter(range(seq_len), [1]*seq_len, c=avg_probs, cmap=cmap, vmin=0, vmax=1, s=20, marker="|")
     
     # Plot smoothed curve
@@ -297,11 +324,16 @@ def region_stress_classification(
         plt.text((reg['start']+reg['end'])/2, 1.1, f"{reg['avg_prob']:.2f}", ha='center', fontsize=8, color='blue')
 
     plt.title("Stress Region Probability Map")
-    plt.yticks([])
+    
+    # Enable Y-Axis ticks 0.0 to 1.0 (The requested feature)
+    plt.yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0], fontsize=8)
+    plt.ylabel("Probability", fontsize=10)
+    plt.ylim(-0.1, 1.2)
+    
     plt.xlabel("Sequence Position (bp)")
     plt.colorbar(sc, label="Stress Probability", orientation="horizontal", pad=0.2)
     
-    # Add a custom legend
+    # Add a custom legend (Previous style)
     from matplotlib.lines import Line2D
     custom_lines = [Line2D([0], [0], color='green', lw=4),
                     Line2D([0], [0], color='yellow', lw=4),
@@ -314,13 +346,24 @@ def region_stress_classification(
     ax = plt.gca()
     ax.xaxis.set_major_locator(ticker.MultipleLocator(200 if seq_len > 1000 else 100))
     ax.grid(axis="x", linestyle="--", alpha=0.3)
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
     
     # Adjust layout to make room for colorbar and legend
     plt.tight_layout()
     plt.savefig(f"{output_dir}/{save_path}", dpi=300, bbox_inches="tight")
     plt.close()
 
-    print(f"Found {len(regions)} stress regions.")
+    if len(regions) > 0:
+        print(f"   > Found {len(regions)} potentially stress-responsive regions:")
+        # List top 5 descending by avg_prob
+        sorted_regs = sorted(regions, key=lambda x: x['avg_prob'], reverse=True)
+        for i, reg in enumerate(sorted_regs[:5]):
+             print(f"     * Region {i+1}: {reg['start']}-{reg['end']} bp (Confidence: {reg['avg_prob']:.2f})")
+        if len(regions) > 5:
+            print(f"     * ... and {len(regions)-5} more.")
+    else:
+        print(f"   > No significant stress regions found (threshold > 0.5).")
+
     return results
 
 def promoter_stress_classification(
@@ -330,59 +373,87 @@ def promoter_stress_classification(
 ):
     """
     Classify stress promoters in a DNA sequence by splitting into slices.
-    
-    This function divides long sequences (5000-10000 bp) into smaller slices
-    and performs region stress classification on each slice.
+    Now supports FLEXIBLE slicing for any sequence length.
     
     Args:
-        model_name: Name of the model to use (dnabert or mistral-athaliana)
-        tokenizer_name: Name of the tokenizer (should match model_name)
-        sequence: DNA sequence string (must be 5000-10000 bp, divisible by 1000)
-        device: torch device for computation
-        slice_size: Size of each slice (1000 or 2000, default: 1000)
-        stride: Step size for sliding window within slices (default: 200)
-        window_size: Size of sliding window within slices (default: 200)
-        output_dir: Directory to save outputs
-        model_path: Optional path to local model
-    
-    Returns:
-        dict: Results containing predictions for each slice
+        model_name: Name of the model
+        tokenizer_name: Name of the tokenizer
+        sequence: DNA sequence string (Any length > window_size)
+        device: torch device
+        slice_size: Size of each slice (default: 1000)
+        stride: Step size for sliding window (default: 200)
     """
     seq_len = len(sequence)
-    if seq_len < 5000 or seq_len > 10000:
-        raise ValueError("Sequence length must be between 5000 - 10000")
-    elif seq_len % 1000 != 0:
-        raise ValueError("Sequence length must be divisible by 1000")
+    
+    # Handle None window_size (Auto-detect mode)
+    # If None, we enforce a minimum safe length (e.g. 200) for slicing
+    check_size = window_size if window_size is not None else 200
 
-    if slice_size == 1000:
-        valid_strides = [100, 200, 500]
-    elif slice_size == 2000:
-        valid_strides = [100, 200, 400, 500]
-    else:
-        raise ValueError("Slice size must be either 1000 or 2000")
+    # 1. Validation (Relaxed)
+    if seq_len < check_size:
+        raise ValueError(f"Sequence length ({seq_len}) is smaller than required minimum ({check_size})")
 
-    if stride not in valid_strides:
-        raise ValueError(f"Stride {stride} is not valid for slice {slice_size}. "
-                         f"Valid: {valid_strides}")
+    print(f"--- Promoter Scanning ---")
+    print(f"Sequence Length: {seq_len} bp")
+    print(f"Configuration: Slice={slice_size}, Stride={stride}, Window={window_size if window_size is not None else 'Auto'}")
 
     os.makedirs(output_dir, exist_ok=True)
     results = {}
 
-    num_slices = (len(sequence) + slice_size - 1) // slice_size
-
-    for slice_id in range(num_slices):
-        start = slice_id * slice_size
-        end = min((slice_id + 1) * slice_size, len(sequence))
-        subseq = sequence[start:end]
-
-        save_path = f"slice{slice_id+1}_stride{stride}.png"
+    # 2. Flexible Slicing Loop WITH OVERLAP
+    # Improved Logic: We now use an overlap between slices to prevent 'Boundary Blindness'.
+    # If a motif is split exactly between slice 1 and 2, neither detects it.
+    # Overlap ensures it sits safely in the middle of at least one slice.
+    
+    overlap = 200  # 200bp safety overlap (typical model window size)
+    step = slice_size - overlap
+    if step <= 0: step = slice_size // 2  # Safety for very small slice settings
+    
+    current_start = 0
+    slice_id = 0
+    
+    while current_start < seq_len:
+        slice_id += 1
+        start = current_start
+        end = min(start + slice_size, seq_len)
         
-        # region_stress_classification now has model loading optimized
-        res = region_stress_classification(
-            model_name, tokenizer_name, subseq, device,
-            window_size=window_size, stride=stride, save_path=save_path,
-            output_dir=output_dir, model_path=model_path
-        )
-        results[f"slice_{slice_id+1}"] = res
+        # Stop if we are just re-processing a tiny tail that's already fully covered
+        # (happens if step is small and we reach end)
+        if start > 0 and (end - start) < check_size:
+             # If this last chunk is tiny, it was likely covered by the previous slice's overlap
+             break
 
+        subseq = sequence[start:end]
+        print(f"\nProcessing Slice {slice_id}: {start}-{end} bp (Overlap: {start - (current_start-step) if slice_id > 1 else 0} bp)")
+
+        save_path = f"slice{slice_id}_{start}_{end}.png"
+        
+        try:
+            res = region_stress_classification(
+                model_name, tokenizer_name, subseq, device,
+                window_size=window_size, stride=stride, save_path=save_path,
+                output_dir=output_dir, model_path=model_path
+            )
+            results[f"slice_{slice_id}"] = res
+        except Exception as e:
+            print(f"   [ERROR] Failed on Slice {slice_id}: {e}")
+
+        # Move to next slice
+        if end == seq_len:
+            break
+        current_start += step
+
+    # Final Summary for Promoter Scanning
+
+    # Final Summary for Promoter Scanning
+    total_found = 0
+    all_regions = []
+    for slice_key, res_dict in results.items():
+        if 'regions' in res_dict:
+            total_found += len(res_dict['regions'])
+            all_regions.extend(res_dict['regions']) # Note: these coordinates are relative to the slice!
+    
+    print("-" * 40)
+    print(f"Summary: Found {total_found} stress regions across {slice_id} slices.")
+    
     return results

@@ -15,11 +15,8 @@ def get_args():
 
     # optional args (need validation)
     parser.add_argument("--slice", type=int, help="Chunk size (only for --pr). Default: 1000")
-    parser.add_argument("--stride", type=int, help=("Stride size (only for --pr)"
-                                                    "Valid values depend on --slice-size: "
-                                                    "1000 → [100, 200, 500]; "
-                                                    "2000 → [100, 200, 400, 500]. "
-                                                    "Default: 200."))
+    parser.add_argument("--stride", type=int, help="Stride size (only for --pr). Default: 200")
+    parser.add_argument("--window", type=int, help="Window size for classification. Default: Auto-detect")
     parser.add_argument("--output", type=str, help=("Output folder. "
                                                     "Default: runs/run_<timestamp>_<type>"))
 
@@ -38,8 +35,10 @@ def get_args():
             args.slice = 1000
         if args.stride is None:
             args.stride = 200
+        # Args.window left as None for Auto-Logic
         # Output default handling moved to main.py to support 'runs' folder structure
     elif args.rg:
+        # Args.window left as None for Auto-Logic
         # Output default handling moved to main.py to support 'runs' folder structure
         if args.slice is not None or args.stride is not None:
             parser.error("--slice and --stride are only valid with --pr")

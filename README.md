@@ -48,6 +48,7 @@ Use `stress_predictor/main.py` to predict stress regions on your FASTA files.
 | `--output` | ❌ | Custom folder to save results. | `runs/run_{date}_{mode}` |
 | `--slice` | ❌ | Window size (base pairs) for promoter scanning (`--pr` only). | `1000` |
 | `--stride` | ❌ | Step size for sliding window (`--pr` only). | `200` |
+| `--window` | ❌ | Context window size for inference. Default is **Auto-Detect** (Optimal based on Model). | `Auto` |
 | `--force-cpu` | ❌ | Force CPU execution even if GPU (CUDA/MPS) is available. | `False` |
 
 ### Examples

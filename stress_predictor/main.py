@@ -12,7 +12,22 @@ if __name__ == "__main__":
 from stress_predictor import read_fasta, write_output, load_model, get_device, get_args
 from stress_predictor import promoter_stress_classification, region_stress_classification
 
-from stress_predictor.io_utils import generate_html_report # Explicit import needed if __init__.py not updated yet
+from stress_predictor.html_report import generate_html_report # Explicit import needed if __init__.py not updated yet
+
+class DualLogger:
+    """Redirects stdout to both terminal and a file."""
+    def __init__(self, filepath):
+        self.terminal = sys.stdout
+        self.log = open(filepath, "w", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
 
 def main():
     args = get_args()
@@ -26,12 +41,24 @@ def main():
     
     # Create output directory immediately
     os.makedirs(args.output, exist_ok=True)
-    print(f"Run ID: {os.path.basename(args.output)}")
-    print(f"Output directory: {args.output}")
+    
+    # Setup logging to file
+    log_file = os.path.join(args.output, "analysis_log.txt")
+    sys.stdout = DualLogger(log_file)
 
+    print("\n" + "="*60)
+    print(f"🌱 PLANT STRESS PREDICTOR | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*60)
+    print(f"Processing Run ID: {os.path.basename(args.output)}")
+    print(f"Output Directory : {args.output}")
+    print("-" * 60)
+    
     # Device
     device = get_device(args.force_cpu)
-    print(f"Using device: {device}")
+    print(f"Compute Device   : {str(device).upper()}")
+    if "cuda" in str(device).lower():
+         print(f"GPU Name         : {torch.cuda.get_device_name(0)}")
+    print("-" * 60 + "\n")
 
     # Read sequences
     sequence = read_fasta(args.input)
@@ -43,12 +70,14 @@ def main():
         result = promoter_stress_classification(
             args.model, args.tokenizer, sequence, device, 
             output_dir=args.output, slice_size=args.slice, stride=args.stride,
+            window_size=args.window,
             model_path=args.model_path
         )
     elif args.rg:
         result = region_stress_classification(
             args.model, args.tokenizer, sequence, device, 
             output_dir=args.output,
+            window_size=args.window,
             model_path=args.model_path
         )
 
@@ -56,7 +85,13 @@ def main():
     write_output(result, args.output)
     generate_html_report(result, args.output, mode=mode)
     
-    print(f"Predictions and HTML report saved to {args.output}")
+    print("\n" + "="*60)
+    print("✅ ANALYSIS COMPLETE")
+    print("="*60)
+    print(f"📂 Results saved to : {args.output}")
+    print(f"� Run Log          : {log_file}")
+    print(f"�📊 HTML Report      : {os.path.join(args.output, f'stress_report_{mode}.html')}") 
+    print("="*60 + "\n")
 
 if __name__ == "__main__":
     main()
